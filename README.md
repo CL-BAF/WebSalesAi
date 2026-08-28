@@ -213,7 +213,7 @@ payments, and no external deployments.
 ## Testing
 
 ```bash
-npm test           # node:test suite (54+ tests) — uses fakes, no network
+npm test           # node:test suite (184 tests) — uses fakes, no network
 npm run typecheck  # strict TypeScript check including tests
 npm run build      # production compile
 npm audit          # dependency audit
