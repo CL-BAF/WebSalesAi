@@ -29,8 +29,16 @@ function parseCookies(req: Request): Record<string, string> {
     const idx = part.indexOf('=');
     if (idx === -1) continue;
     const name = part.slice(0, idx).trim();
-    const value = part.slice(idx + 1).trim();
-    if (name) out[name] = decodeURIComponent(value);
+    const rawValue = part.slice(idx + 1).trim();
+    if (!name) continue;
+    // R1: a malformed cookie (e.g. trailing %) must not 500 the request.
+    let value = rawValue;
+    try {
+      value = decodeURIComponent(rawValue);
+    } catch {
+      // keep raw value
+    }
+    out[name] = value;
   }
   return out;
 }

@@ -54,7 +54,7 @@ function paramId(req: Req): string {
 function errorStatus(err: unknown): number {
   if (err instanceof AppError) {
     if (err.code === 'NOT_FOUND') return 404;
-    if (err.code === 'CONFLICT' || err.code === 'IDEMPOTENCY_IN_FLIGHT') return 409;
+    if (err.code === 'CONFLICT' || err.code === 'IDEMPOTENCY_IN_FLIGHT' || err.code === 'EXTERNAL_ACTION_ERROR') return 409;
     if (err.code === 'VALIDATION_ERROR' || err.code === 'INVALID_TRANSITION') return 400;
     if (err.code === 'INJECTION_GUARD') return 400;
     return 500;
@@ -113,7 +113,7 @@ export function createHttpServer(deps: HttpDeps): Express {
     const expected = createHmac('sha256', secret).update(raw, 'utf8').digest('hex');
     const a = Buffer.from(expected, 'utf8');
     const b = Buffer.from(signature, 'utf8');
-    if (a.length !== b.length || !a.equals(b)) {
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
       deps.ctx.audit.append({ actor: 'provider', actorType: 'provider', action: 'webhook.rejected', details: { reason: 'invalid inbound email signature' } });
       return res.status(401).json({ error: 'invalid signature' });
     }

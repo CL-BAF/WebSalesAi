@@ -154,6 +154,89 @@ describe('payment stage (deterministic)', () => {
     assert.equal(w.payments.isPaymentConfirmed(w.jobId), false);
   });
 
+  test('M8-1: provider failure → retry resumes, exactly one payment row and checkout', async () => {
+    // First createCheckout call throws; the retry (same idempotency key) succeeds.
+    const original = w.provider.createCheckout.bind(w.provider) as MockPaymentProvider['createCheckout'];
+    let failedOnce = false;
+    w.provider.createCheckout = async (input: Parameters<MockPaymentProvider['createCheckout']>[0]) => {
+      if (!failedOnce) {
+        failedOnce = true;
+        throw new Error('checkout provider down');
+      }
+      return original(input);
+    };
+
+    // First attempt: transition to AWAITING_PAYMENT happens, provider throws.
+    await assert.rejects(() => w.payments.createPaymentRequest(w.jobId, 'business'), /checkout provider down/);
+    assert.equal(w.world.jobs.requireById(w.jobId).state, 'AWAITING_PAYMENT');
+
+    // Retry (fresh claim again after release, state now AWAITING_PAYMENT → resume).
+    const retry = await w.payments.createPaymentRequest(w.jobId, 'business');
+    assert.equal(retry.created, true);
+    assert.ok(retry.checkoutUrl, 'checkout URL must be obtainable after resume');
+
+    // Exactly one payment row and one AWAITING_PAYMENT transition.
+    const rowCount = w.world.db.get<{ c: number }>('SELECT COUNT(*) AS c FROM payments')?.c;
+    assert.equal(rowCount, 1);
+    const transitions = w.world.audit
+      .listForJob(w.jobId)
+      .filter((e) => e.action === 'state.transition' && e.details?.['to'] === 'AWAITING_PAYMENT');
+    assert.equal(transitions.length, 1, 'no duplicate AWAITING_PAYMENT transition');
+    assert.equal(w.world.jobs.requireById(w.jobId).state, 'AWAITING_PAYMENT');
+  });
+
+  test('M8-2: stale payment.failed under a fresh event id never downgrades a paid payment', async () => {
+    await w.payments.createPaymentRequest(w.jobId, 'starter');
+    const payment = w.world.db.get<{ reference: string; id: string }>("SELECT provider_reference AS reference, id FROM payments")!;
+
+    const success = { id: 'evt_ok', type: 'payment.succeeded' as const, reference: payment.reference };
+    const ok = MockPaymentProvider.signEvent(success, 'whsec_test_123');
+    const applied = await w.payments.handleWebhook(ok.body, ok.signature);
+    assert.ok(applied.handled, 'expected handled result');
+    assert.equal(applied.paymentStatus, 'paid');
+    assert.equal(w.payments.isPaymentConfirmed(w.jobId), true);
+
+    // Stale failure with a NEW event id arrives after the success.
+    const stale = { id: 'evt_stale_fail', type: 'payment.failed' as const, reference: payment.reference };
+    const staleBody = MockPaymentProvider.signEvent(stale, 'whsec_test_123');
+    const res = await w.payments.handleWebhook(staleBody.body, staleBody.signature);
+    assert.ok(res.handled, 'expected handled result');
+    assert.equal(res.paymentStatus, 'paid', 'stale failure must not downgrade');
+    assert.equal(res.handled, true);
+
+    const row = w.world.db.get<{ status: string }>('SELECT status FROM payments')!;
+    assert.equal(row.status, 'paid', 'payment row must remain paid');
+    assert.equal(w.world.jobs.requireById(w.jobId).state, 'PAYMENT_CONFIRMED');
+    assert.equal(w.payments.isPaymentConfirmed(w.jobId), true, 'production guard must not contradict the completed state');
+  });
+
+  test('M8-2: duplicate success under a fresh event id is an idempotent no-op', async () => {
+    await w.payments.createPaymentRequest(w.jobId, 'starter');
+    const payment = w.world.db.get<{ reference: string }>("SELECT provider_reference AS reference FROM payments")!;
+
+    const first = { id: 'evt_first', type: 'payment.succeeded' as const, reference: payment.reference };
+    const firstBody = MockPaymentProvider.signEvent(first, 'whsec_test_123');
+    const r1 = await w.payments.handleWebhook(firstBody.body, firstBody.signature);
+    assert.ok(r1.handled, 'expected handled result');
+    assert.equal(r1.paymentStatus, 'paid');
+    assert.equal(r1.code, 'applied');
+
+    // Same success re-delivered under a NEW event id: must not throw or re-transition.
+    const second = { id: 'evt_second', type: 'payment.succeeded' as const, reference: payment.reference };
+    const secondBody = MockPaymentProvider.signEvent(second, 'whsec_test_123');
+    const r2 = await w.payments.handleWebhook(secondBody.body, secondBody.signature);
+    assert.equal(r2.handled, true);
+    assert.equal(r2.code, 'idempotent_noop');
+    assert.ok(r2.handled, 'expected handled result');
+    assert.equal(r2.paymentStatus, 'paid');
+
+    const confirmations = w.world.audit
+      .listForJob(w.jobId)
+      .filter((e) => e.action === 'payment.confirmed');
+    assert.equal(confirmations.length, 1, 'exactly one PAYMENT_CONFIRMED audit entry');
+    assert.equal(w.world.jobs.requireById(w.jobId).state, 'PAYMENT_CONFIRMED');
+  });
+
   test('webhook: unknown reference is recorded but not applied', async () => {
     const event = { id: 'evt_unknown', type: 'payment.succeeded' as const, reference: 'mock_cs_unknown' };
     const { body, signature } = MockPaymentProvider.signEvent(event, 'whsec_test_123');
@@ -161,5 +244,6 @@ describe('payment stage (deterministic)', () => {
     assert.deepEqual(res, { handled: false, reason: 'unknown payment reference', code: 'unknown_reference' });
   });
 });
+
 
 
