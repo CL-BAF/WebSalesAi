@@ -44,6 +44,15 @@ function tryParse(text: string): { ok: true; value: unknown } | { ok: false } {
   }
 }
 
+export interface RunStructuredResult<T> {
+  output: T;
+  usage: OllamaUsage;
+  model: string;
+  attempts: number;
+  /** agent_runs row id of the successful attempt (audit linkage). */
+  runId: string;
+}
+
 export interface RunStructuredArgs<T> {
   role: AgentRole;
   purpose: string;
@@ -84,7 +93,7 @@ export class AgentFramework {
     ].join('\n\n');
   }
 
-  async runStructured<T>(args: RunStructuredArgs<T>): Promise<{ output: T; usage: OllamaUsage; model: string; attempts: number }> {
+  async runStructured<T>(args: RunStructuredArgs<T>): Promise<RunStructuredResult<T>> {
     const model = this.opts.models[args.role];
     const messages: OllamaChatMessage[] = [
       { role: 'system', content: this.systemPrompt(args.role) },
@@ -151,7 +160,7 @@ export class AgentFramework {
             jobId: args.jobId,
             details: { runId: run.id, status: 'succeeded', attempt: attempts, model: result.model },
           });
-          return { output: validated.data, usage: result.usage, model: result.model, attempts };
+          return { output: validated.data, usage: result.usage, model: result.model, attempts, runId: run.id };
         }
 
         lastIssues = validated.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);

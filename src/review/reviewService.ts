@@ -76,6 +76,7 @@ export class ReviewService {
     }));
 
     let verdict: ReviewerVerdict;
+    let reviewerRunId: string | null = null;
     try {
       const res = await this.deps.reviewer.review({
         jobId,
@@ -87,6 +88,7 @@ export class ReviewService {
         revisionCycle,
       });
       verdict = res.verdict;
+      reviewerRunId = res.runId;
       this.deps.audit.append({
         actor: 'agent:reviewer',
         actorType: 'agent',
@@ -135,6 +137,7 @@ export class ReviewService {
       cycle: cycleNumber,
       verdict: effectiveVerdict,
       findings: verdict,
+      reviewerRunId,
     });
     this.deps.audit.append({
       actor: 'agent:reviewer',
