@@ -34,7 +34,7 @@ capabilities are implemented and verified by tests:
 | Reviewer QA loop (bounded cycles, deterministic overrule) | Implemented |
 | Preview/production deployment (local provider, guarded) | Implemented |
 | Payment integration (configured pricing, HMAC-signed mock webhook, event dedup) | Implemented |
-| Web dashboard | Planned |
+| Web dashboard (session auth, CSRF, rate limiting, JSON API, webhook routes) | Implemented |
 
 ## Architecture
 
@@ -271,6 +271,35 @@ src/
   http/                API, webhooks, dashboard (with later stages)
 tests/                 node:test suites (offline, fakes for all providers)
 ```
+
+## API surface and webhook contract
+
+Dashboard: `GET /` serves the single-page dashboard (login, summary counters,
+job list, lead/job detail, action buttons for approve/reject/research/build/
+review/deploy/opt-out/kill switch/pause).
+
+Authentication: session cookie (`HttpOnly`, `SameSite=Strict`, signed with
+`SESSION_SECRET`, 12h TTL) issued by `POST /login` (rate limited: 10/15min per
+IP). All `/api/*` routes require the session. Mutating `/api/*` routes require
+a double-submit CSRF header (`x-csrf-token` matching the `wsa_csrf` cookie;
+obtain via `GET /api/csrf`). General API rate limit: 600/min per IP.
+
+JSON API (session + CSRF): `GET /api/summary`, `GET /api/jobs`,
+`GET /api/jobs/:id` (full lead/job view incl. audit trail), `POST
+/api/leads/import`, `POST /api/jobs/:id/{research,draft-outreach,review,build,
+deploy-preview,deploy-production,payment-request,transition,opt-out}`,
+`POST /api/outreach/drafts/:id/{approve,reject}`, `GET|POST /api/settings`.
+
+Webhooks (no session; signature-verified, rate limited 120/min per IP):
+
+| Route | Signature scheme | Behaviour |
+| --- | --- | --- |
+| `POST /webhooks/payment` | provider header (mock: `x-mock-signature`), HMAC-SHA256 over raw body, timing-safe compare | raw body required; events deduped by `(provider, event_id)`; unknown references recorded but inert (200); invalid signature 401; no secret configured 503 (fail-closed) |
+| `POST /webhooks/email` | `x-inbound-signature`, HMAC-SHA256 over raw body | body `{from, subject?, body, externalId?, provider?}`; threaded into the CRM and processed idempotently; disabled (503) unless `INBOUND_EMAIL_WEBHOOK_SECRET` is set |
+
+Preview sites are served read-only at `/preview/<jobId>/…` and accepted
+production deployments at `/production/<jobId>/…`, both with strict path
+containment.
 
 ## Provider architecture
 

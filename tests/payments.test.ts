@@ -103,7 +103,7 @@ describe('payment stage (deterministic)', () => {
     const event = { id: 'evt_1', type: 'payment.succeeded' as const, reference: payment.reference };
     const { body, signature } = MockPaymentProvider.signEvent(event, 'whsec_test_123');
     const res = await w.payments.handleWebhook(body, signature);
-    assert.deepEqual(res, { handled: true, jobId: w.jobId, paymentStatus: 'paid', duplicate: false });
+    assert.deepEqual(res, { handled: true, jobId: w.jobId, paymentStatus: 'paid', duplicate: false, code: 'applied' });
     assert.equal(w.world.jobs.requireById(w.jobId).state, 'PAYMENT_CONFIRMED');
     assert.ok(w.world.audit.listForJob(w.jobId).some((e) => e.action === 'payment.confirmed' && e.actorType === 'provider'));
     assert.equal(w.payments.isPaymentConfirmed(w.jobId), true);
@@ -118,7 +118,7 @@ describe('payment stage (deterministic)', () => {
     const r1 = await w.payments.handleWebhook(body, signature);
     assert.equal(r1.handled, true);
     const r2 = await w.payments.handleWebhook(body, signature);
-    assert.deepEqual(r2, { handled: false, duplicate: true });
+    assert.deepEqual(r2, { handled: false, duplicate: true, code: 'duplicate_event' });
     assert.equal(w.world.jobs.requireById(w.jobId).state, 'PAYMENT_CONFIRMED');
     const confirmations = w.world.audit.listForJob(w.jobId).filter((e) => e.action === 'payment.confirmed');
     assert.equal(confirmations.length, 1);
@@ -130,7 +130,7 @@ describe('payment stage (deterministic)', () => {
     const event = { id: 'evt_bad', type: 'payment.succeeded' as const, reference: payment.reference };
     const { body } = MockPaymentProvider.signEvent(event, 'whsec_test_123');
     const res = await w.payments.handleWebhook(body, 'deadbeef');
-    assert.deepEqual(res, { handled: false, reason: 'invalid signature' });
+    assert.deepEqual(res, { handled: false, reason: 'invalid signature', code: 'invalid_signature' });
     assert.equal(w.world.jobs.requireById(w.jobId).state, 'AWAITING_PAYMENT');
     assert.ok(w.world.audit.listRecent(10).some((e) => e.action === 'webhook.rejected'));
   });
@@ -140,7 +140,7 @@ describe('payment stage (deterministic)', () => {
     await seedToClientApproved(open);
     await open.payments.createPaymentRequest(open.jobId, 'starter');
     const res = await open.payments.handleWebhook('{"id":"x","type":"payment.succeeded","reference":"r"}', 'sig');
-    assert.deepEqual(res, { handled: false, reason: 'webhook secret not configured' });
+    assert.deepEqual(res, { handled: false, reason: 'webhook secret not configured', code: 'not_configured' });
   });
 
   test('webhook: failed payment marks payment failed, job stays AWAITING_PAYMENT', async () => {
@@ -149,7 +149,7 @@ describe('payment stage (deterministic)', () => {
     const event = { id: 'evt_fail', type: 'payment.failed' as const, reference: payment.reference };
     const { body, signature } = MockPaymentProvider.signEvent(event, 'whsec_test_123');
     const res = await w.payments.handleWebhook(body, signature);
-    assert.deepEqual(res, { handled: true, jobId: w.jobId, paymentStatus: 'failed', duplicate: false });
+    assert.deepEqual(res, { handled: true, jobId: w.jobId, paymentStatus: 'failed', duplicate: false, code: 'applied' });
     assert.equal(w.world.jobs.requireById(w.jobId).state, 'AWAITING_PAYMENT');
     assert.equal(w.payments.isPaymentConfirmed(w.jobId), false);
   });
@@ -158,7 +158,8 @@ describe('payment stage (deterministic)', () => {
     const event = { id: 'evt_unknown', type: 'payment.succeeded' as const, reference: 'mock_cs_unknown' };
     const { body, signature } = MockPaymentProvider.signEvent(event, 'whsec_test_123');
     const res = await w.payments.handleWebhook(body, signature);
-    assert.deepEqual(res, { handled: false, reason: 'unknown payment reference' });
+    assert.deepEqual(res, { handled: false, reason: 'unknown payment reference', code: 'unknown_reference' });
   });
 });
+
 

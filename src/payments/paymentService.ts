@@ -1,4 +1,4 @@
-import { ValidationError } from '../domain/errors.js';
+﻿import { ValidationError } from '../domain/errors.js';
 import type { PaymentProvider } from './paymentProvider.js';
 import type { PaymentRepository } from '../db/repositories/payments.js';
 import type { WorkflowJobRepository } from '../db/repositories/workflowJobs.js';
@@ -31,9 +31,9 @@ export interface CreatePaymentResult {
 }
 
 export type WebhookResult =
-  | { handled: false; duplicate: true }
-  | { handled: false; reason: string }
-  | { handled: true; jobId: string; paymentStatus: 'paid' | 'failed'; duplicate: false };
+  | { handled: false; duplicate: true; code: 'duplicate_event' }
+  | { handled: false; reason: string; code: 'invalid_signature' | 'not_configured' | 'unknown_reference' }
+  | { handled: true; jobId: string; paymentStatus: 'paid' | 'failed'; duplicate: false; code: 'applied' | 'idempotent_noop' };
 
 /**
  * Deterministic payment stage. The AI may only REQUEST payment creation
@@ -43,7 +43,11 @@ export type WebhookResult =
  * webhooks with event-level deduplication.
  */
 export class PaymentService {
-  constructor(private readonly deps: PaymentServiceDeps) {}
+  readonly signatureHeader: string;
+
+  constructor(private readonly deps: PaymentServiceDeps) {
+    this.signatureHeader = deps.paymentProvider.signatureHeader;
+  }
 
   /** Creates a checkout for a tier at the CONFIGURED price. */
   async createPaymentRequest(jobId: string, tier: string): Promise<CreatePaymentResult> {
@@ -71,12 +75,15 @@ export class PaymentService {
     }
 
     try {
-      if (job.state !== 'CLIENT_APPROVED') {
+      // M8-1: a fresh claim is valid from CLIENT_APPROVED (create) OR
+      // AWAITING_PAYMENT (resume after a provider failure). Any other state
+      // is refused and the claim released so the caller can retry later.
+      if (job.state !== 'CLIENT_APPROVED' && job.state !== 'AWAITING_PAYMENT') {
         throw new ValidationError(`payment request requires CLIENT_APPROVED state, job is ${job.state}`);
       }
-
-      // CLIENT_APPROVED → AWAITING_PAYMENT (deterministic, system actor).
-      this.deps.engine.transition(jobId, 'AWAITING_PAYMENT', { actor: 'system', actorType: 'system', reason: `payment request created for tier ${tierName}` });
+      if (job.state === 'CLIENT_APPROVED') {
+        this.deps.engine.transition(jobId, 'AWAITING_PAYMENT', { actor: 'system', actorType: 'system', reason: `payment request created for tier ${tierName}` });
+      }
 
       const record = this.deps.db.transaction(() => {
         const opened = this.deps.payments.open({
@@ -126,11 +133,11 @@ export class PaymentService {
     const secret = this.deps.config.paymentWebhookSecret;
     if (!secret) {
       this.deps.audit.append({ actor: 'provider', actorType: 'provider', action: 'webhook.rejected', details: { reason: 'no webhook secret configured (fail-closed)' } });
-      return { handled: false, reason: 'webhook secret not configured' };
+      return { handled: false, reason: 'webhook secret not configured', code: 'not_configured' };
     }
     if (!this.deps.paymentProvider.verifyWebhookSignature(rawBody, signature, secret)) {
       this.deps.audit.append({ actor: 'provider', actorType: 'provider', action: 'webhook.rejected', details: { reason: 'invalid signature' } });
-      return { handled: false, reason: 'invalid signature' };
+      return { handled: false, reason: 'invalid signature', code: 'invalid_signature' };
     }
 
     const event = this.deps.paymentProvider.parseWebhookEvent(rawBody);
@@ -149,16 +156,27 @@ export class PaymentService {
     );
     if (!dedupe.fresh) {
       this.deps.audit.append({ actor: 'provider', actorType: 'provider', action: 'webhook.received', details: { eventId: event.eventId, note: 'duplicate event ignored' } });
-      return { handled: false, duplicate: true };
+      return { handled: false, duplicate: true, code: 'duplicate_event' };
     }
 
     if (!payment) {
       this.deps.audit.append({ actor: 'provider', actorType: 'provider', action: 'webhook.received', details: { eventId: event.eventId, note: 'unknown payment reference' } });
-      return { handled: false, reason: 'unknown payment reference' };
+      return { handled: false, reason: 'unknown payment reference', code: 'unknown_reference' };
     }
 
     // Link the stored event to the payment and apply status deterministically.
     if (event.type === 'payment.succeeded') {
+      // M8-2: idempotent no-op if already paid/confirmed â€” a duplicate success
+      // under a fresh event id must never re-transition or throw.
+      if (payment.status === 'paid') {
+        this.deps.audit.append({
+          actor: 'payment-provider',
+          actorType: 'provider',
+          action: 'webhook.received',
+          details: { eventId: event.eventId, note: 'duplicate success ignored (payment already paid)' },
+        });
+        return { handled: true, jobId: payment.jobId, paymentStatus: 'paid', duplicate: false, code: 'idempotent_noop' };
+      }
       this.deps.db.transaction(() => {
         this.deps.payments.setStatus(payment.id, 'paid');
         this.deps.audit.append({
@@ -170,10 +188,24 @@ export class PaymentService {
         });
       });
       // Provider actor is the only non-owner type allowed to confirm payment.
-      const result = this.deps.engine.transition(payment.jobId, 'PAYMENT_CONFIRMED', { actor: 'payment-provider', actorType: 'provider', reason: `webhook ${event.eventId}` });
-      return { handled: true, jobId: result.job.id, paymentStatus: 'paid', duplicate: false };
+      const current = this.deps.jobs.requireById(payment.jobId);
+      if (current.state === 'AWAITING_PAYMENT') {
+        this.deps.engine.transition(payment.jobId, 'PAYMENT_CONFIRMED', { actor: 'payment-provider', actorType: 'provider', reason: `webhook ${event.eventId}` });
+      }
+      return { handled: true, jobId: payment.jobId, paymentStatus: 'paid', duplicate: false, code: 'applied' };
     }
 
+    // M8-2: never downgrade â€” a stale payment.failed under a fresh event id
+    // must not flip an already-paid payment (the production guard reads this).
+    if (payment.status === 'paid') {
+      this.deps.audit.append({
+        actor: 'payment-provider',
+        actorType: 'provider',
+        action: 'webhook.received',
+        details: { eventId: event.eventId, note: 'stale failed event ignored (payment already paid)' },
+      });
+      return { handled: true, jobId: payment.jobId, paymentStatus: 'paid', duplicate: false, code: 'idempotent_noop' };
+    }
     this.deps.db.transaction(() => {
       this.deps.payments.setStatus(payment.id, 'failed');
       this.deps.audit.append({
@@ -184,7 +216,7 @@ export class PaymentService {
         details: { eventId: event.eventId, reference: event.reference },
       });
     });
-    return { handled: true, jobId: payment.jobId, paymentStatus: 'failed', duplicate: false };
+    return { handled: true, jobId: payment.jobId, paymentStatus: 'failed', duplicate: false, code: 'applied' };
   }
 
   /** Used by the production deployment guard (defense in depth). */
@@ -192,3 +224,5 @@ export class PaymentService {
     return this.deps.payments.isPaid(jobId);
   }
 }
+
+

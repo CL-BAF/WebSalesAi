@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebSalesAi Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>WebSalesAi</h1>
+    <div class="controls">
+      <button id="btn-kill" class="danger" title="Global outbound kill switch">Kill switch: ?</button>
+      <button id="btn-pause" class="warn" title="Pause all automation">Pause: ?</button>
+      <button id="btn-logout">Log out</button>
+    </div>
+  </header>
+
+  <section id="login-view" class="login hidden">
+    <form id="login-form">
+      <h2>Log in</h2>
+      <label>Dashboard password <input type="password" id="login-password" required></label>
+      <button type="submit">Log in</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </section>
+
+  <main id="app-view" class="hidden">
+    <section class="summary" id="summary"></section>
+
+    <section class="layout">
+      <div class="jobs-pane">
+        <h2>Jobs</h2>
+        <form id="import-form" class="import">
+          <h3>Import lead</h3>
+          <input name="businessName" placeholder="Business name *" required>
+          <input name="websiteUrl" placeholder="Website URL">
+          <input name="contactEmail" placeholder="Contact email">
+          <input name="industry" placeholder="Industry">
+          <button type="submit">Import</button>
+        </form>
+        <ul id="job-list" class="job-list"></ul>
+      </div>
+
+      <div class="detail-pane" id="detail">
+        <p class="muted">Select a job to see details.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

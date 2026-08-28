@@ -140,6 +140,11 @@ export class LeadRepository {
     return rowToLead(row);
   }
 
+  tryGetById(id: string): LeadRecord | undefined {
+    const row = this.db.get<Record<string, unknown>>('SELECT * FROM leads WHERE id = ?', id);
+    return row ? rowToLead(row) : undefined;
+  }
+
   /** Deduplication is host-based: one lead per website host. */
   tryGetByWebsite(url: string): LeadRecord | undefined {
     const host = normalizeWebsiteHost(url);
