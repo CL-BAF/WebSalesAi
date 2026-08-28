@@ -48,7 +48,7 @@ export const TRANSITIONS: Readonly<Record<WorkflowState, readonly WorkflowState[
   RESEARCHING: ['READY_FOR_OUTREACH', 'LEAD_REJECTED', 'FAILED'],
   LEAD_REJECTED: [],
   READY_FOR_OUTREACH: ['AWAITING_OUTREACH_APPROVAL', 'OUTREACH_SENT', 'LEAD_REJECTED'],
-  AWAITING_OUTREACH_APPROVAL: ['OUTREACH_SENT', 'LEAD_REJECTED'],
+  AWAITING_OUTREACH_APPROVAL: ['OUTREACH_SENT', 'LEAD_REJECTED', 'READY_FOR_OUTREACH'],
   OUTREACH_SENT: ['AWAITING_REPLY'],
   AWAITING_REPLY: ['CONVERSATION_ACTIVE', 'LEAD_REJECTED'],
   CONVERSATION_ACTIVE: ['INTERESTED', 'AWAITING_REPLY', 'REQUIREMENTS_PENDING'],
@@ -85,11 +85,53 @@ export const TRANSITIONS: Readonly<Record<WorkflowState, readonly WorkflowState[
 /** Targets permitted from ANY non-terminal state (owner / system guards). */
 export const GLOBAL_TARGETS: readonly WorkflowState[] = ['OPTED_OUT', 'NEEDS_HUMAN_REVIEW', 'FAILED'];
 
-/** Actor types allowed to use global targets. */
+/** Actor types. 'agent' attribution is reserved for AI-driven transitions. */
 export type ActorType = 'system' | 'agent' | 'owner' | 'provider';
+
+/**
+ * Actor allowlists for PRIVILEGED edges. Transitions not covered by these
+ * rules are permitted to any actor type. Enforcement is in the engine —
+ * this table is the single source of truth.
+ *
+ * Design intent:
+ *  - money, deployment and human-review-resume gates can NEVER be driven by
+ *    an 'agent' actor;
+ *  - 'provider' is limited to payment/webhook-sourced truths;
+ *  - the deterministic application pipeline acts as 'system'.
+ */
+export const EDGE_ACTOR_RULES: Readonly<Record<string, readonly ActorType[]>> = {
+  'AWAITING_PAYMENT->PAYMENT_CONFIRMED': ['provider', 'owner'],
+  'AWAITING_OUTREACH_APPROVAL->OUTREACH_SENT': ['owner', 'system'],
+  'READY_FOR_PRODUCTION->DEPLOYING': ['system', 'owner'],
+  'DEPLOYING->COMPLETED': ['system', 'owner'],
+};
+
+/** All transitions FROM these states are restricted to these actors. */
+export const FROM_ACTOR_RULES: Readonly<Partial<Record<WorkflowState, readonly ActorType[]>>> = {
+  NEEDS_HUMAN_REVIEW: ['owner'],
+};
+
+/** All transitions TO these states are restricted to these actors. */
+export const TO_ACTOR_RULES: Readonly<Partial<Record<WorkflowState, readonly ActorType[]>>> = {
+  PAYMENT_CONFIRMED: ['provider', 'owner'],
+  OPTED_OUT: ['owner', 'system', 'provider'],
+  NEEDS_HUMAN_REVIEW: ['owner', 'system'],
+  FAILED: ['owner', 'system'],
+};
 
 export function isWorkflowState(value: unknown): value is WorkflowState {
   return typeof value === 'string' && (WORKFLOW_STATES as readonly string[]).includes(value);
+}
+
+export function isActorAllowed(from: WorkflowState, to: WorkflowState, actorType: ActorType): boolean {
+  const edgeKey = `${from}->${to}`;
+  const edge = EDGE_ACTOR_RULES[edgeKey];
+  if (edge) return edge.includes(actorType);
+  const fromRule = FROM_ACTOR_RULES[from];
+  if (fromRule && !fromRule.includes(actorType)) return false;
+  const toRule = TO_ACTOR_RULES[to];
+  if (toRule && !toRule.includes(actorType)) return false;
+  return true;
 }
 
 export function canTransition(from: WorkflowState, to: WorkflowState): boolean {
@@ -105,5 +147,11 @@ export function assertTransition(from: WorkflowState, to: WorkflowState): void {
   }
   if (!canTransition(from, to)) {
     throw new InvalidTransitionError(from, to, TERMINAL_STATES.has(from) ? 'source state is terminal' : 'not in allowed-transition table');
+  }
+}
+
+export function assertActorAllowed(from: WorkflowState, to: WorkflowState, actorType: ActorType): void {
+  if (!isActorAllowed(from, to, actorType)) {
+    throw new InvalidTransitionError(from, to, `actor type "${actorType}" is not permitted for this transition`);
   }
 }

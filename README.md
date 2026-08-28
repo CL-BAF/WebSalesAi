@@ -25,7 +25,9 @@ capabilities are implemented and verified by tests:
 | Idempotency layer for external actions | Implemented |
 | Ollama runtime (per-role models, structured outputs, bounded retries) | Implemented |
 | Prompt-injection containment for untrusted content | Implemented |
-| Lead research subsystem | Planned |
+| SSRF-guarded website fetching (redirect hops validated, size/time bounded) | Implemented |
+| Lead import (dedupe by website host, suppression list) + Researcher agent | Implemented |
+| Actor-gated transitions (money/deploy/human-review edges restricted by actor type) | Implemented |
 | CRM, conversations, outreach | Planned |
 | Website generation workspace + Builder | Planned |
 | Reviewer QA loop | Planned |
@@ -82,6 +84,15 @@ Terminal states: `COMPLETED`, `LEAD_REJECTED`, `OPTED_OUT`.
 Guard states reachable from any non-terminal state: `OPTED_OUT`,
 `NEEDS_HUMAN_REVIEW`, `FAILED` (FAILED is retryable; NEEDS_HUMAN_REVIEW
 resumes to explicit states).
+
+**Privileged transitions are actor-gated** (`src/domain/workflow.ts`): the
+engine enforces per-edge actor allowlists on top of the transition table.
+Examples: `PAYMENT_CONFIRMED` may only be performed by the `provider` (verified
+webhook) or `owner`; leaving `NEEDS_HUMAN_REVIEW` is `owner`-only; sending from
+the outreach approval state and all production-deployment edges are
+`system`/`owner`-only. An `agent` actor can never confirm payment, exit human
+review, trigger deployment, mark completion, opt out a lead, or unilaterally
+fail a job. Every rejection is audited.
 
 Source: `src/domain/workflow.ts`, applied by `src/engine/workflowEngine.ts`.
 
@@ -161,6 +172,8 @@ See `.env.example` for the full annotated list. Highlights:
 | `DEPLOYMENT_PROVIDER` | `local` | no |
 | `OUTREACH_ENABLED` | `false` | no |
 | `OUTREACH_REQUIRE_APPROVAL` | `true` | no |
+| `OUTREACH_COOLDOWN_HOURS` | `72` (per-contact) | no |
+| `OUTREACH_MIN_SCORE` | `60` (min researcher score for auto-qualification) | no |
 | `OUTREACH_KILL_SWITCH` | `false` | no |
 | `PAYMENT_WEBHOOK_SECRET` | — | **yes** |
 | `INBOUND_EMAIL_WEBHOOK_SECRET` | — | **yes** |

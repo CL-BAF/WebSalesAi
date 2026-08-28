@@ -116,6 +116,7 @@ const envSchema = z.object({
   OUTREACH_MAX_PER_DAY: int({ min: 1, max: 1000, default: 20 }),
   OUTREACH_MAX_PER_DOMAIN_PER_DAY: int({ min: 1, max: 100, default: 1 }),
   OUTREACH_COOLDOWN_HOURS: int({ min: 1, max: 24 * 90, default: 72 }),
+  OUTREACH_MIN_SCORE: int({ min: 0, max: 100, default: 60 }),
   OUTREACH_KILL_SWITCH: boolish.optional().transform((v) => (v === undefined ? false : v)),
   AUTOMATION_PAUSED: boolish.optional().transform((v) => (v === undefined ? false : v)),
 
@@ -170,6 +171,7 @@ export type AppConfig = {
     maxPerDay: number;
     maxPerDomainPerDay: number;
     cooldownHours: number;
+    minScore: number;
     killSwitchInitial: boolean;
   };
 
@@ -270,6 +272,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       maxPerDay: (envValues['OUTREACH_MAX_PER_DAY'] as number) ?? 20,
       maxPerDomainPerDay: (envValues['OUTREACH_MAX_PER_DOMAIN_PER_DAY'] as number) ?? 1,
       cooldownHours: (envValues['OUTREACH_COOLDOWN_HOURS'] as number) ?? 72,
+      minScore: (envValues['OUTREACH_MIN_SCORE'] as number) ?? 60,
       killSwitchInitial: (envValues['OUTREACH_KILL_SWITCH'] as boolean) ?? false,
     },
 

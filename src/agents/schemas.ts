@@ -61,14 +61,32 @@ export const replyClassificationSchema = z.object({
 });
 export type ReplyClassification = z.infer<typeof replyClassificationSchema>;
 
-/** Website Builder output: concrete file plan for an isolated workspace. */
+/**
+ * Shared safe-relative-path validator for any model-supplied path.
+ * Enforced again at filesystem write time (resolved-path containment check) —
+ * this schema is the first boundary, not the only one.
+ */
+export const safeRelativePath = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9 _\-./]*$/, 'path must be relative and use safe characters')
+  .refine((p) => !p.includes('..') && !p.startsWith('/') && !p.includes('\\'), 'path traversal is not allowed')
+  .refine(
+    (p) =>
+      p
+        .split('/')
+        .every(
+          (seg) =>
+            seg.length > 0 &&
+            !/[. ]$/.test(seg) &&
+            !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])([. ][^.]*)?$/i.test(seg),
+        ),
+    'unsafe path segment',
+  );
+
 export const generatedFileSchema = z.object({
-  path: z
-    .string()
-    .min(1)
-    .max(200)
-    .regex(/^[a-zA-Z0-9][a-zA-Z0-9 _\-./]*$/, 'path must be relative and use safe characters')
-    .refine((p) => !p.includes('..') && !p.startsWith('/') && !p.includes('\\'), 'path traversal is not allowed'),
+  path: safeRelativePath,
   content: z.string().max(200_000),
   purpose: z.string().max(300).default(''),
 });
@@ -76,7 +94,7 @@ export type GeneratedFile = z.infer<typeof generatedFileSchema>;
 
 export const builderSiteSchema = z.object({
   siteTitle: z.string().min(1).max(200),
-  pages: z.array(z.object({ path: z.string().max(200), title: z.string().min(1).max(200) })).min(1).max(30),
+  pages: z.array(z.object({ path: safeRelativePath, title: z.string().min(1).max(200) })).min(1).max(30),
   files: z.array(generatedFileSchema).min(1).max(200),
   buildNotes: z.string().max(2000).default(''),
 });

@@ -29,9 +29,9 @@ export function wrapUntrusted(
   const maxChars = opts.maxChars ?? DEFAULT_MAX_UNTRUSTED_CHARS;
   const cleanLabel = label.replace(/[<>"\\/\r\n ]/g, '_');
   let body = content
+    .normalize('NFKC')
     .replace(CONTROL_CHARS, ' ')
-    .replace(/<\/?untrusted\b[^>]*>/gi, '[untrusted-tag-removed]')
-    .normalize('NFKC');
+    .replace(/<\/?untrusted\b[^>]*>/gi, '[untrusted-tag-removed]');
   if (body.length > maxChars) {
     body = `${body.slice(0, maxChars)}\n[TRUNCATED: source exceeded ${maxChars} characters]`;
   }

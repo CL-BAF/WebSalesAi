@@ -203,6 +203,31 @@ describe('agent framework', () => {
     assert.equal(finished.filter((e) => e.details?.['status'] === 'succeeded').length, 1);
   });
 
+  test('agent runs record real attempt numbers (1,2,3)', async () => {
+    let calls = 0;
+    const transport: OllamaTransport = async () => {
+      calls++;
+      return { model: 'm', content: 'garbage', usage: {} };
+    };
+    const fw = makeFramework(transport, 2);
+    await assert.rejects(
+      () =>
+        fw.runStructured({
+          role: 'reviewer',
+          purpose: 'test-attempts',
+          instruction: 'i',
+          task: 't',
+          schema: researcherDossierSchema,
+        }),
+      AgentOutputError,
+    );
+    const attempts = db
+      .prepare("SELECT attempt FROM agent_runs WHERE purpose = 'test-attempts' ORDER BY started_at ASC")
+      .all()
+      .map((r) => Number((r as Record<string, unknown>)['attempt']));
+    assert.deepEqual(attempts, [1, 2, 3]);
+  });
+
   test('extractJson handles prose, fences and plain JSON', () => {
     assert.deepEqual(extractJson('{"a":1}'), { a: 1 });
     assert.deepEqual(extractJson('Sure!\n```json\n{"a":2}\n```'), { a: 2 });

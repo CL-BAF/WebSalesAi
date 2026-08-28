@@ -7,6 +7,8 @@ import { WorkflowJobRepository } from './db/repositories/workflowJobs.js';
 import { LeadRepository } from './db/repositories/leads.js';
 import { SettingsRepository, SETTING_KEYS } from './db/repositories/settings.js';
 import { IdempotencyRepository } from './db/repositories/idempotency.js';
+import { AgentRunRepository } from './db/repositories/agentRuns.js';
+import { SuppressionRepository } from './db/repositories/suppressions.js';
 import { WorkflowEngine } from './engine/workflowEngine.js';
 
 export interface AppContext {
@@ -18,6 +20,8 @@ export interface AppContext {
   leads: LeadRepository;
   settings: SettingsRepository;
   idempotency: IdempotencyRepository;
+  runs: AgentRunRepository;
+  suppressions: SuppressionRepository;
   engine: WorkflowEngine;
 }
 
@@ -36,6 +40,8 @@ export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppConte
   const leads = new LeadRepository(db);
   const settings = new SettingsRepository(db);
   const idempotency = new IdempotencyRepository(db);
+  const runs = new AgentRunRepository(db);
+  const suppressions = new SuppressionRepository(db);
   const engine = new WorkflowEngine(db, jobs, audit);
 
   // Seed runtime safety switches from env (runtime changes go through settings).
@@ -46,7 +52,7 @@ export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppConte
     settings.setBool(SETTING_KEYS.automationPaused, config.automationPausedInitial);
   }
 
-  return { config, log, db, audit, jobs, leads, settings, idempotency, engine };
+  return { config, log, db, audit, jobs, leads, settings, idempotency, runs, suppressions, engine };
 }
 
 export function closeAppContext(ctx: AppContext): void {

@@ -7,12 +7,6 @@ export class AppError extends Error {
   }
 }
 
-export class ConfigError extends AppError {
-  constructor(message: string) {
-    super('CONFIG_ERROR', message);
-  }
-}
-
 export class InvalidTransitionError extends AppError {
   constructor(from: string, to: string, reason?: string) {
     super('INVALID_TRANSITION', `illegal workflow transition ${from} -> ${to}${reason ? `: ${reason}` : ''}`);

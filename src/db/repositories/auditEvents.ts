@@ -1,4 +1,4 @@
-import { newId, nowIso } from '../../domain/ids.js';
+import { nowIso } from '../../domain/ids.js';
 import { redactSecrets } from '../../logger.js';
 import type { Database } from '../database.js';
 
@@ -138,5 +138,3 @@ function rowToEvent(row: Record<string, unknown>): AuditEventRecord {
     details: row['details_json'] ? (JSON.parse(String(row['details_json'])) as Record<string, unknown>) : null,
   };
 }
-
-export { newId };

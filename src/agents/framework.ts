@@ -102,7 +102,8 @@ export class AgentFramework {
         model,
         purpose: args.purpose,
         jobId: args.jobId,
-        inputJson: JSON.stringify({ instructionLength: args.instruction.length, taskLength: args.task.length, attempt: attempts }),
+        inputJson: JSON.stringify({ instructionLength: args.instruction.length, taskLength: args.task.length }),
+        attempt: attempts,
       });
       this.opts.audit.append({
         actor: `agent:${args.role}`,

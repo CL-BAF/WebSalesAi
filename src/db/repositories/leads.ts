@@ -72,6 +72,17 @@ function rowToLead(row: Record<string, unknown>): LeadRecord {
   };
 }
 
+export function normalizeWebsiteHost(url: string): string | null {
+  try {
+    const parsed = new URL(url.includes('://') ? url : `https://${url}`);
+    let host = parsed.hostname.toLowerCase();
+    if (host.startsWith('www.')) host = host.slice(4);
+    return host || null;
+  } catch {
+    return null;
+  }
+}
+
 export class LeadRepository {
   constructor(private readonly db: Database) {}
 
@@ -91,12 +102,14 @@ export class LeadRepository {
         at,
       );
       const leadId = newId('lead');
+      const websiteHost = input.websiteUrl ? normalizeWebsiteHost(input.websiteUrl) : null;
       this.db.run(
-        `INSERT INTO leads (id, business_id, website_url, contact_name, contact_email, contact_source, discovery_source, discovery_detail, score, confidence, dossier_json, selection_reason, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
+        `INSERT INTO leads (id, business_id, website_url, website_host, contact_name, contact_email, contact_source, discovery_source, discovery_detail, score, confidence, dossier_json, selection_reason, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
         leadId,
         bizId,
         input.websiteUrl ?? null,
+        websiteHost,
         input.contactName ?? null,
         input.contactEmail ?? null,
         input.contactSource ?? null,
@@ -124,10 +137,13 @@ export class LeadRepository {
     return rowToLead(row);
   }
 
+  /** Deduplication is host-based: one lead per website host. */
   tryGetByWebsite(url: string): LeadRecord | undefined {
+    const host = normalizeWebsiteHost(url);
+    if (!host) return undefined;
     const row = this.db.get<Record<string, unknown>>(
-      'SELECT * FROM leads WHERE LOWER(website_url) = LOWER(?)',
-      url,
+      'SELECT * FROM leads WHERE website_host = ?',
+      host,
     );
     return row ? rowToLead(row) : undefined;
   }

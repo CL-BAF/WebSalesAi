@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS outreach_drafts (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL REFERENCES workflow_jobs(id),
   subject TEXT NOT NULL,
-  body_text NOT NULL,
+  body_text TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
   decided_by TEXT,
   decided_at TEXT,
@@ -252,6 +252,16 @@ export const MIGRATIONS: readonly Migration[] = [
   {
     name: '001_initial_schema',
     sql: INITIAL_SCHEMA,
+  },
+  {
+    // Adds normalized website host for lead deduplication. Pre-existing rows
+    // (dev databases only) have NULL host and keep full-URL matching.
+    name: '002_leads_website_host',
+    sql: `
+ALTER TABLE leads ADD COLUMN website_host TEXT;
+CREATE INDEX IF NOT EXISTS idx_leads_host ON leads(website_host) WHERE website_host IS NOT NULL;
+DROP INDEX IF EXISTS idx_leads_website;
+`,
   },
 ];
 

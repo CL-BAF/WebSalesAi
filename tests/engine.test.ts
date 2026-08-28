@@ -166,6 +166,21 @@ describe('idempotency', () => {
     assert.throws(() => repo.runOnce('k1', 'scope', () => 1), /in flight/);
   });
 
+  test('failing fn releases the key so the action can be retried', () => {
+    const repo = new IdempotencyRepository(db);
+    assert.throws(() => repo.runOnce('k3', 'scope', () => { throw new Error('boom'); }), /boom/);
+    const row = db.get<{ completed_at: string | null }>("SELECT completed_at FROM idempotency_keys WHERE key = 'k3'");
+    assert.equal(row, undefined, 'key row must be deleted after failure');
+    let calls = 0;
+    const second = repo.runOnce('k3', 'scope', () => {
+      calls++;
+      return 'recovered';
+    });
+    assert.equal(second.fresh, true);
+    assert.equal(second.result, 'recovered');
+    assert.equal(calls, 1);
+  });
+
   test('result and side effects commit atomically', () => {
     const repo = new IdempotencyRepository(db);
     assert.throws(
@@ -177,7 +192,12 @@ describe('idempotency', () => {
       /boom/,
     );
     assert.equal(db.get<{ c: number }>('SELECT COUNT(*) AS c FROM suppression_entries')?.c, 0);
-    const row = db.get<{ completed_at: string | null }>("SELECT completed_at FROM idempotency_keys WHERE key = 'k2'");
-    assert.equal(row?.completed_at, null);
+    assert.equal(db.get<{ c: number }>('SELECT COUNT(*) AS c FROM idempotency_keys WHERE key = \'k2\'')?.c, 0);
+  });
+
+  test('replay with a different scope is rejected', () => {
+    const repo = new IdempotencyRepository(db);
+    repo.runOnce('k4', 'payments', () => 42);
+    assert.throws(() => repo.runOnce('k4', 'outreach', () => 1), /scope/);
   });
 });

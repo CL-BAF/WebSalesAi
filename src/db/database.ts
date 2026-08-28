@@ -1,7 +1,6 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { nowIso } from '../domain/ids.js';
 
 export type SqlParams = string | number | bigint | Uint8Array | null;
 
@@ -70,8 +69,4 @@ export class Database {
   close(): void {
     this.db.close();
   }
-}
-
-export function touchSql(now: string): string {
-  return now ?? nowIso();
 }

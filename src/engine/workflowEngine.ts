@@ -2,6 +2,7 @@ import { nowIso } from '../domain/ids.js';
 import { ConflictError, InvalidTransitionError, NotFoundError } from '../domain/errors.js';
 import {
   assertTransition,
+  assertActorAllowed,
   TERMINAL_STATES,
   type ActorType,
   type WorkflowState,
@@ -39,19 +40,28 @@ export class WorkflowEngine {
   getOrCreateJobForLead(leadId: string, actor: string = 'system'): WorkflowJobRecord {
     const existing = this.jobs.tryGetByLeadId(leadId);
     if (existing) return existing;
-    const job = this.db.transaction(() => {
-      const created = this.jobs.createForLead(leadId, 'LEAD_DISCOVERED');
-      this.audit.append({
-        actor,
-        actorType: 'system',
-        action: 'job.created',
-        jobId: created.id,
-        leadId,
-        details: { initialState: created.state },
+    try {
+      return this.db.transaction(() => {
+        const created = this.jobs.createForLead(leadId, 'LEAD_DISCOVERED');
+        this.audit.append({
+          actor,
+          actorType: 'system',
+          action: 'job.created',
+          jobId: created.id,
+          leadId,
+          details: { initialState: created.state },
+        });
+        return created;
       });
-      return created;
-    });
-    return job;
+    } catch (err) {
+      // Two racers may create concurrently; the UNIQUE(lead_id) constraint
+      // decides — the loser re-reads the winner's job.
+      if (err instanceof Error && /UNIQUE constraint failed/.test(err.message)) {
+        const winner = this.jobs.tryGetByLeadId(leadId);
+        if (winner) return winner;
+      }
+      throw err;
+    }
   }
 
   transition(jobId: string, to: WorkflowState, ctx: TransitionContext): TransitionResult {
@@ -62,6 +72,7 @@ export class WorkflowEngine {
         if (!job) throw new NotFoundError('workflow job', jobId);
         fromState = job.state;
         assertTransition(fromState, to);
+        assertActorAllowed(fromState, to, ctx.actorType);
 
         const at = nowIso();
         const changed = this.jobs.guardedTransition(jobId, fromState, to, at);

@@ -44,6 +44,8 @@ export interface FetchTransportOptions {
   retries: number;
   log?: Logger;
   fetchImpl?: typeof fetch;
+  /** Injectable delay for backoff tests (ms). Defaults to real setTimeout. */
+  delayImpl?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -75,6 +77,9 @@ export class FetchOllamaTransport {
         const retryable = lastError instanceof RetryableTransportError;
         this.opts.log?.debug({ attempt, retryable, error: lastError.message }, 'ollama transport attempt failed');
         if (!retryable || attempt === this.opts.retries) break;
+        // Jittered exponential backoff, capped — never hammer a 429/5xx API.
+        const delay = Math.min(200 * 2 ** attempt + Math.floor(Math.random() * 200), 2000);
+        await (this.opts.delayImpl ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(delay);
       }
     }
     throw new ExternalActionError(`ollama transport failed: ${lastError.message}`);

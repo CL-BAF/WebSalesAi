@@ -24,6 +24,7 @@ export interface StartAgentRunInput {
   purpose: string;
   jobId?: string;
   inputJson?: string;
+  attempt?: number;
 }
 
 function rowToRun(row: Record<string, unknown>): AgentRunRecord {
@@ -52,12 +53,13 @@ export class AgentRunRepository {
     const at = nowIso();
     this.db.run(
       `INSERT INTO agent_runs (id, role, model, job_id, purpose, attempt, status, input_json, started_at)
-       VALUES (?, ?, ?, ?, ?, 1, 'running', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
       id,
       input.role,
       input.model,
       input.jobId ?? null,
       input.purpose,
+      input.attempt ?? 1,
       input.inputJson ?? null,
       at,
     );
