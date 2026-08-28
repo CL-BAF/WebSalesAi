@@ -64,9 +64,19 @@ export class DeploymentService {
     const idempotencyKey = `deploy:preview:${jobId}`;
     const claim = this.deps.idempotency.claim(idempotencyKey, 'deployment');
     if (!claim.fresh) {
-      // Replay after the state advanced (or a duplicate caller): return cached.
+      // M7-1: replay. If the link was never delivered (job still
+      // PREVIEW_READY), re-attempt the send through the fresh guard stack —
+      // the outreach reply key was released on the earlier block, so the
+      // retry re-runs guards honestly. sent:true only when a send succeeded.
       const cached = claim.result as { url: string } | undefined;
-      return cached?.url ? { deployed: true, url: cached.url, sent: true } : { deployed: true, sent: false, blockedReason: 'already deployed; link send pending' };
+      if (!cached?.url) {
+        return { deployed: true, sent: false, blockedReason: 'deployment incomplete; retry pending' };
+      }
+      if (job.state === 'PREVIEW_READY') {
+        const retried = await this.attemptPreviewSend(job, cached.url);
+        return { deployed: true, url: cached.url, sent: retried.sent, blockedReason: retried.sent ? undefined : retried.reason };
+      }
+      return { deployed: true, url: cached.url, sent: true };
     }
     // Fresh claim: state must still be PREVIEW_READY.
     if (job.state !== 'PREVIEW_READY') {
@@ -115,6 +125,20 @@ export class DeploymentService {
 
     // Send the customer the private preview link. The body is deterministic
     // application text (never LLM-generated); the email guard stack applies.
+    const send = await this.attemptPreviewSend(job, url);
+    if (!send.sent) {
+      // Deployment exists; the link send was guard-blocked. State stays
+      // PREVIEW_READY so the send can be retried later (M7-1 replay path).
+      return { deployed: true, url, sent: false, blockedReason: send.reason };
+    }
+    return { deployed: true, url, sent: true };
+  }
+
+  /** Sends the preview link and advances the state on success. */
+  private async attemptPreviewSend(
+    job: { id: string; leadId: string },
+    url: string,
+  ): Promise<{ sent: boolean; reason?: string }> {
     const subject = 'Your website preview is ready';
     const body = [
       'Hello,',
@@ -128,22 +152,20 @@ export class DeploymentService {
     ].join('\n');
     const send = await this.deps.outreach.sendConversationReply(job.leadId, subject, body);
     if (!send.sent) {
-      // Deployment exists; the link send was guard-blocked. State stays
-      // PREVIEW_READY so the send can be retried later.
-      return { deployed: true, url, sent: false, blockedReason: send.reason };
+      return { sent: false, reason: send.reason };
     }
     this.deps.audit.append({
       actor: 'system',
       actorType: 'system',
       action: 'preview.sent',
-      jobId,
+      jobId: job.id,
       leadId: job.leadId,
       details: { url },
     });
     // State: PREVIEW_READY → PREVIEW_SENT → AWAITING_CLIENT_APPROVAL.
-    this.deps.engine.transition(jobId, 'PREVIEW_SENT', { actor: 'system', actorType: 'system', reason: 'preview link delivered' });
-    this.deps.engine.transition(jobId, 'AWAITING_CLIENT_APPROVAL', { actor: 'system', actorType: 'system', reason: 'awaiting customer review of preview' });
-    return { deployed: true, url, sent: true };
+    this.deps.engine.transition(job.id, 'PREVIEW_SENT', { actor: 'system', actorType: 'system', reason: 'preview link delivered' });
+    this.deps.engine.transition(job.id, 'AWAITING_CLIENT_APPROVAL', { actor: 'system', actorType: 'system', reason: 'awaiting customer review of preview' });
+    return { sent: true };
   }
 
   async deployProduction(jobId: string): Promise<{ deployed: boolean; url?: string; reason?: string }> {

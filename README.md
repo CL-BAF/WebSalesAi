@@ -183,6 +183,7 @@ See `.env.example` for the full annotated list. Highlights:
 | `OLLAMA_MAX_REPAIR_RETRIES` | `2` | no |
 | `OLLAMA_TRANSPORT_RETRIES` | `2` | no |
 | `REVIEW_MAX_CYCLES` | `5` | no |
+| `REQUIRE_PAYMENT_FOR_PRODUCTION` | `true` (**fail-closed**; `false` = owner-authorized override that allows production deploy without confirmed payment) | no |
 | `EMAIL_PROVIDER` | `mock` | no |
 | `PAYMENT_PROVIDER` | `mock` | no |
 | `DEPLOYMENT_PROVIDER` | `local` | no |

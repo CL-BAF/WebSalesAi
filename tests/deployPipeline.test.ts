@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createLogger } from '../src/logger.js';
+import { SETTING_KEYS } from '../src/db/repositories/settings.js';
 import { ReviewRepository } from '../src/db/repositories/reviews.js';
 import { DeploymentRepository } from '../src/db/repositories/deployments.js';
 import { LocalDeploymentProvider } from '../src/deploy/providers/localDeploy.js';
@@ -196,6 +197,32 @@ describe('Stages 6+7: review loop, preview and production deployment', () => {
     assert.equal(refused.deployed, false);
     assert.match(refused.reason ?? '', /no review PASS/);
     assert.equal(p.world.jobs.requireById(j3).state, 'READY_FOR_PRODUCTION', 'refusal must not advance state');
+  });
+
+  test('M7-1: guard-blocked preview link send is retryable after the guard clears', async () => {
+    const p = await makeFullPipeline({ paymentConfirmed: true });
+    cleanups.push(p.base, p.previews, p.productions);
+    // Engage the kill switch BEFORE the preview link send.
+    p.world.settings.setBool(SETTING_KEYS.outreachKillSwitch, true);
+    await p.drive();
+    const state1 = p.world.jobs.requireById(p.jobId).state;
+    assert.equal(state1, 'PREVIEW_READY', 'deployment done, send blocked, state preserved');
+    const sentBefore = p.world.email.sent.filter((m) => m.subject === 'Your website preview is ready').length;
+    assert.equal(sentBefore, 0);
+
+    // Clear the kill switch and RETRY via deployAndSendPreview (replay path).
+    p.world.settings.setBool(SETTING_KEYS.outreachKillSwitch, false);
+    const retry = await p.deploy.deployAndSendPreview(p.jobId);
+    assert.ok(retry.deployed);
+    assert.ok(retry.sent, 'retry must report the real send outcome');
+    const sentAfter = p.world.email.sent.filter((m) => m.subject === 'Your website preview is ready').length;
+    assert.equal(sentAfter, 1, 'link delivered exactly once after retry');
+    assert.equal(p.world.jobs.requireById(p.jobId).state, 'AWAITING_CLIENT_APPROVAL');
+
+    // Replay after success: cached, honest, no duplicate email.
+    const replay = await p.deploy.deployAndSendPreview(p.jobId);
+    assert.ok(replay.deployed && replay.sent);
+    assert.equal(p.world.email.sent.filter((m) => m.subject === 'Your website preview is ready').length, 1);
   });
 
   test('production deploy refusal does not advance state; deploy idempotency on replay', async () => {
