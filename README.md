@@ -30,11 +30,10 @@ capabilities are implemented and verified by tests:
 | Actor-gated transitions (money/deploy/human-review edges restricted by actor type) | Implemented |
 | CRM threading, reply classification, requirements capture | Implemented |
 | Outreach guards (approval, kill switch, limits, cooldown, suppression at send time) | Implemented |
-| CRM, conversations, outreach | Planned |
 | Website generation workspace + Builder | Implemented |
-| Reviewer QA loop | Planned |
-| Preview / production deployment | Planned |
-| Payment integration + webhooks | Planned |
+| Reviewer QA loop (bounded cycles, deterministic overrule) | Implemented |
+| Preview/production deployment (local provider, guarded) | Implemented |
+| Payment integration (configured pricing, HMAC-signed mock webhook, event dedup) | Implemented |
 | Web dashboard | Planned |
 
 ## Architecture
