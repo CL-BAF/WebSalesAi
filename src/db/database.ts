@@ -81,7 +81,11 @@ export class Database {
    * network I/O belongs in the transactional-outbox pattern instead.
    */
   transactionAsync<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.txDepth > 0) return fn();
+    if (this.txDepth > 0 || this.asyncTxOpen) {
+      // Joining an open sync tx is meaningless for async work: the sync tx
+      // would commit before the async continuations run. Refuse loudly.
+      throw new ConflictError('cannot start an async transaction inside another transaction');
+    }
     const run = this.asyncChain.then(() => {
       this.asyncTxOpen = true;
       this.db.exec('BEGIN IMMEDIATE');

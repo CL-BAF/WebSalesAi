@@ -60,16 +60,19 @@ export class WebsiteBuildService {
     const { engine, jobs, leads, projects } = this.deps;
     const job = jobs.requireById(jobId);
 
-    // Enter BUILDING from the correct entry state (deterministic pipeline).
+    // Enter BUILDING from a legal entry state (deterministic pipeline).
+    // FAILED is retryable (S6-3): BUILDING must never be a dead end.
     const current = jobs.requireById(jobId);
-    if (revisionCycle > 0) {
+    if (current.state === 'FAILED') {
+      this.deps.audit.append({ actor: 'system', actorType: 'system', action: 'stage.retried', jobId, details: { stage: 'build', failureReason: current.failureReason } });
+    } else if (revisionCycle > 0) {
       if (current.state !== 'REVISION_REQUIRED') {
         throw new ValidationError(`revision build requires REVISION_REQUIRED state, job is ${current.state}`);
       }
     } else if (current.state !== 'READY_TO_BUILD') {
       throw new ValidationError(`build requires READY_TO_BUILD state, job is ${current.state}`);
     }
-    engine.transition(jobId, 'BUILDING', { actor: 'system', actorType: 'system', reason: revisionCycle > 0 ? `revision cycle ${revisionCycle}` : 'initial build' });
+    engine.transition(jobId, 'BUILDING', { actor: 'system', actorType: 'system', reason: revisionCycle > 0 ? `revision cycle ${revisionCycle}` : current.state === 'FAILED' ? 'retry after failure' : 'initial build' });
 
     const lead = leads.requireLead(job.leadId);
     const business = leads.requireBusiness(lead.businessId);
@@ -88,36 +91,58 @@ export class WebsiteBuildService {
       details: { revisionCycle, requirements: requirements.length },
     });
 
-    const workspace = this.workspaceFor(jobId);
-    await workspace.create();
+    let written: string[];
+    let commitHash: string | null;
+    let generatedSiteTitle: string;
+    let generatedModel: string;
+    let generatedAttempts: number;
+    try {
+      const generated = await this.deps.builder.generate({
+        jobId,
+        businessName: business.name,
+        industry: business.industry,
+        dossier,
+        requirements: requirements.map((r) => ({ category: r.category, title: r.title, detail: r.detail })),
+        revisionFeedback: opts.revisionFeedback,
+        revisionCycle,
+      });
+      generatedSiteTitle = generated.site.siteTitle;
+      generatedModel = generated.model;
+      generatedAttempts = generated.attempts;
 
-    const generated = await this.deps.builder.generate({
-      jobId,
-      businessName: business.name,
-      industry: business.industry,
-      dossier,
-      requirements: requirements.map((r) => ({ category: r.category, title: r.title, detail: r.detail })),
-      revisionFeedback: opts.revisionFeedback,
-      revisionCycle,
-    });
-
-    const written: string[] = [];
-    for (const file of generated.site.files) {
-      const res = workspace.writeFile(file.path, file.content);
-      written.push(res.path);
+      const workspace = this.workspaceFor(jobId);
+      await workspace.create();
+      written = [];
+      for (const file of generated.site.files) {
+        const res = workspace.writeFile(file.path, file.content);
+        written.push(res.path);
+      }
+      commitHash = await workspace.commitRevision(
+        revisionCycle > 0 ? `Revision ${revisionCycle}: ${generatedSiteTitle}` : `Initial build: ${generatedSiteTitle}`,
+      );
+    } catch (err) {
+      // S6-3: builder failure must never leave BUILDING as a dead end.
+      const message = err instanceof Error ? err.message : String(err);
+      engine.transition(jobId, 'FAILED', { actor: 'system', actorType: 'system', reason: `build failed: ${message}` });
+      this.deps.audit.append({
+        actor: 'system',
+        actorType: 'system',
+        action: 'generation.failed',
+        jobId,
+        leadId: lead.id,
+        details: { error: message, revisionCycle },
+      });
+      throw err;
     }
+
     this.deps.audit.append({
       actor: 'agent:builder',
       actorType: 'agent',
       action: 'files.generated',
       jobId,
       leadId: lead.id,
-      details: { count: written.length, files: written, model: generated.model, attempts: generated.attempts, revisionCycle },
+      details: { count: written.length, files: written, model: generatedModel, attempts: generatedAttempts, revisionCycle },
     });
-
-    const commitHash = await workspace.commitRevision(
-      revisionCycle > 0 ? `Revision ${revisionCycle}: ${generated.site.siteTitle}` : `Initial build: ${generated.site.siteTitle}`,
-    );
     this.deps.audit.append({
       actor: 'system',
       actorType: 'system',
@@ -127,6 +152,7 @@ export class WebsiteBuildService {
       details: { command: 'git commit', purpose: 'record site revision', commitHash },
     });
 
+    const workspace = this.workspaceFor(jobId);
     const checks = runBuildChecks(workspace.readAllFiles());
     this.deps.audit.append({
       actor: 'system',
@@ -136,7 +162,6 @@ export class WebsiteBuildService {
       leadId: lead.id,
       details: {
         commitHash,
-        pages: generated.site.pages.length,
         files: written.length,
         checkFindings: checks.findings.length,
         checkHigh: checks.findings.filter((f) => f.severity === 'high').length,

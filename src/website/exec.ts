@@ -58,8 +58,15 @@ export async function runAllowlisted(cmd: AllowlistedCommand, baseDir: string): 
       throw new ValidationError(`git subcommand not allowlisted: ${String(sub)}`);
     }
     for (const arg of cmd.args) {
-      if (/^-c$|^--config|^--upload-pack|^--exec|^--ext/.test(arg)) {
+      if (/^-c$|^--config|^--upload-pack|^--exec|^--ext|^--git-dir|^--work-tree|^--namespace|^--output|^--filter/.test(arg)) {
         throw new ValidationError(`potentially dangerous git argument: ${arg}`);
+      }
+    }
+    if (sub === 'config') {
+      // Only repo-local user identity is ever configured.
+      const key = cmd.args[1];
+      if (!key || !/^user\.(email|name)$/.test(key)) {
+        throw new ValidationError(`git config key not allowlisted: ${String(key)}`);
       }
     }
   }

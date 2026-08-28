@@ -91,7 +91,7 @@ describe('allowlisted exec', () => {
   });
 
   test('runs allowlisted git commands inside base dir', async () => {
-    const res = await runAllowlisted({ exe: 'git', args: ['rev-parse', '--git-dir'], cwd: workspace.root, timeoutMs: 10000 }, base);
+    const res = await runAllowlisted({ exe: 'git', args: ['status', '--short'], cwd: workspace.root, timeoutMs: 10000 }, base);
     assert.equal(res.code, 0);
     assert.equal(res.timedOut, false);
   });

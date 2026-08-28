@@ -355,7 +355,20 @@ export class ConversationService {
       return { transitions: ['NEEDS_HUMAN_REVIEW'], sendReply: false, flagHumanReview: true };
     }
 
-    const buildPhaseStates: WorkflowState[] = ['READY_TO_BUILD', 'BUILDING', 'REVIEWING', 'REVISION_REQUIRED', 'PREVIEW_READY', 'PREVIEW_SENT', 'AWAITING_CLIENT_APPROVAL', 'CLIENT_APPROVED', 'AWAITING_PAYMENT', 'PAYMENT_CONFIRMED', 'READY_FOR_PRODUCTION', 'DEPLOYING', 'NEEDS_HUMAN_REVIEW', 'FAILED'];
+    const buildPhaseStates: WorkflowState[] = ['READY_TO_BUILD', 'BUILDING', 'REVIEWING', 'REVISION_REQUIRED', 'PREVIEW_READY', 'PREVIEW_SENT', 'AWAITING_PAYMENT', 'PAYMENT_CONFIRMED', 'READY_FOR_PRODUCTION', 'DEPLOYING', 'NEEDS_HUMAN_REVIEW', 'FAILED'];
+
+    // Client approval of the preview is a customer-driven gate: an explicit
+    // positive reply in AWAITING_CLIENT_APPROVAL advances to CLIENT_APPROVED.
+    if (job.state === 'AWAITING_CLIENT_APPROVAL') {
+      switch (classification.intent) {
+        case 'positive':
+          return { transitions: ['CLIENT_APPROVED'], sendReply: true, flagHumanReview: false };
+        case 'negative':
+          return { transitions: ['NEEDS_HUMAN_REVIEW'], sendReply: false, flagHumanReview: true };
+        default:
+          return { transitions: [], sendReply: false, flagHumanReview: true };
+      }
+    }
 
     // NOTE: intent 'opt_out' never reaches this planner — it returns early in
     // the pipeline (deterministic detector runs first; agent-detected opt-outs

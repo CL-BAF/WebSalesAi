@@ -91,7 +91,8 @@ export class Workspace {
   readFile(relPath: string): string | undefined {
     const target = path.resolve(this.root, relPath);
     if (!isInsideDir(this.root, target)) return undefined;
-    if (!existsSync(target) || lstatSync(target).isDirectory()) return undefined;
+    if (!existsSync(target)) return undefined;
+    if (lstatSync(target).isSymbolicLink() || lstatSync(target).isDirectory()) return undefined;
     return readFileSync(target, 'utf8');
   }
 

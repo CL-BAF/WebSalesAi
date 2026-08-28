@@ -106,6 +106,7 @@ const envSchema = z.object({
   OLLAMA_TRANSPORT_RETRIES: int({ min: 0, max: 5, default: 2 }),
 
   REVIEW_MAX_CYCLES: int({ min: 1, max: 20, default: 5 }),
+  REQUIRE_PAYMENT_FOR_PRODUCTION: boolish.optional().transform((v) => (v === undefined ? true : v)),
 
   EMAIL_PROVIDER: z.enum(['mock']).optional().transform((v) => v ?? 'mock'),
   PAYMENT_PROVIDER: z.enum(['mock']).optional().transform((v) => v ?? 'mock'),
@@ -160,6 +161,7 @@ export type AppConfig = {
   };
 
   reviewMaxCycles: number;
+  requirePaymentForProduction: boolean;
 
   emailProvider: 'mock';
   paymentProvider: 'mock';
@@ -261,6 +263,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
 
     reviewMaxCycles: (envValues['REVIEW_MAX_CYCLES'] as number) ?? 5,
+    requirePaymentForProduction: (envValues['REQUIRE_PAYMENT_FOR_PRODUCTION'] as boolean) ?? true,
 
     emailProvider: 'mock',
     paymentProvider: 'mock',
