@@ -22,6 +22,7 @@ export interface OutreachLogRecord {
   idempotencyKey: string;
   provider: string;
   providerMessageId: string | null;
+  status: 'sending' | 'sent' | 'failed';
   sentAt: string;
   createdAt: string;
 }
@@ -50,6 +51,7 @@ function rowToLog(row: Record<string, unknown>): OutreachLogRecord {
     idempotencyKey: String(row['idempotency_key']),
     provider: String(row['provider']),
     providerMessageId: (row['provider_message_id'] as string | null) ?? null,
+    status: (row['status'] as OutreachLogRecord['status']) ?? 'sent',
     sentAt: String(row['sent_at']),
     createdAt: String(row['created_at']),
   };
@@ -88,8 +90,13 @@ export class OutreachRepository {
     return row ? rowToDraft(row) : undefined;
   }
 
+  /**
+   * L4-3: atomic decide — the UPDATE is guarded by status='pending', so a
+   * second approver gets a clear "already decided" error instead of
+   * spuriously double-auditing.
+   */
   decideDraft(id: string, status: 'approved' | 'rejected', decidedBy: string): OutreachDraftRecord {
-    this.db.run(
+    const res = this.db.run(
       "UPDATE outreach_drafts SET status = ?, decided_by = ?, decided_at = ?, updated_at = ? WHERE id = ? AND status = 'pending'",
       status,
       decidedBy,
@@ -97,41 +104,69 @@ export class OutreachRepository {
       nowIso(),
       id,
     );
+    if (Number(res.changes) === 0) {
+      const current = this.requireDraft(id);
+      throw new Error(`draft ${id} already decided (status: ${current.status})`);
+    }
     return this.requireDraft(id);
   }
 
-  addLog(input: {
+  /**
+   * Transactional-outbox insert: claims the log row with status 'sending'.
+   * Safe to call on retry after a crash — INSERT OR IGNORE + re-read by key.
+   */
+  openLog(input: {
     jobId: string;
     leadId: string;
-    conversationId?: string;
-    messageId?: string;
     idempotencyKey: string;
     provider: string;
-    providerMessageId?: string;
+    conversationId?: string;
   }): OutreachLogRecord {
-    const id = newId('orl');
     const at = nowIso();
     this.db.run(
-      `INSERT INTO outreach_log (id, job_id, lead_id, conversation_id, message_id, idempotency_key, provider, provider_message_id, sent_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id,
+      `INSERT OR IGNORE INTO outreach_log (id, job_id, lead_id, conversation_id, idempotency_key, provider, status, sent_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'sending', ?, ?)`,
+      newId('orl'),
       input.jobId,
       input.leadId,
       input.conversationId ?? null,
-      input.messageId ?? null,
       input.idempotencyKey,
       input.provider,
-      input.providerMessageId ?? null,
       at,
       at,
     );
-    const row = this.db.get<Record<string, unknown>>('SELECT * FROM outreach_log WHERE id = ?', id);
-    return rowToLog(row!);
+    const row = this.db.get<Record<string, unknown>>('SELECT * FROM outreach_log WHERE idempotency_key = ?', input.idempotencyKey);
+    if (!row) throw new Error('failed to open outreach log row');
+    return rowToLog(row);
+  }
+
+  /** Completes the outbox row: status 'sent' + provider/message linkage. */
+  completeLog(idempotencyKey: string, providerMessageId: string, messageId: string): void {
+    this.db.run(
+      "UPDATE outreach_log SET status = 'sent', provider_message_id = ?, message_id = ? WHERE idempotency_key = ?",
+      providerMessageId,
+      messageId,
+      idempotencyKey,
+    );
+  }
+
+  /** Marks the outbox row failed after a provider error (retryable). */
+  failLog(idempotencyKey: string, error: string): void {
+    this.db.run(
+      "UPDATE outreach_log SET status = 'failed' WHERE idempotency_key = ?",
+      idempotencyKey,
+    );
+    void error;
+  }
+
+  tryGetLogByKey(idempotencyKey: string): OutreachLogRecord | undefined {
+    const row = this.db.get<Record<string, unknown>>('SELECT * FROM outreach_log WHERE idempotency_key = ?', idempotencyKey);
+    return row ? rowToLog(row) : undefined;
   }
 
   countSince(provider: string, sinceIso: string): number {
     const row = this.db.get<{ c: number }>(
-      'SELECT COUNT(*) AS c FROM outreach_log WHERE provider = ? AND sent_at >= ?',
+      "SELECT COUNT(*) AS c FROM outreach_log WHERE provider = ? AND status != 'failed' AND sent_at >= ?",
       provider,
       sinceIso,
     );
@@ -139,14 +174,14 @@ export class OutreachRepository {
   }
 
   countForDomainSince(domain: string, sinceIso: string): number {
-    // recipient email stored in messages/conversations; outreach_log joins via
-    // lead — count sends to leads whose contact_email ends with @domain.
+    // Recipient email lives on the lead; count sends to leads whose
+    // contact_email ends with @domain. Failed attempts do not count.
     const like = `%@${domain}`;
     const row = this.db.get<{ c: number }>(
       `SELECT COUNT(*) AS c
        FROM outreach_log o
        JOIN leads l ON l.id = o.lead_id
-       WHERE o.sent_at >= ? AND LOWER(l.contact_email) LIKE ?`,
+       WHERE o.status != 'failed' AND o.sent_at >= ? AND LOWER(l.contact_email) LIKE ?`,
       sinceIso,
       like,
     );
@@ -158,14 +193,17 @@ export class OutreachRepository {
       `SELECT MAX(o.sent_at) AS sent_at
        FROM outreach_log o
        JOIN leads l ON l.id = o.lead_id
-       WHERE LOWER(l.contact_email) = LOWER(?)`,
+       WHERE o.status != 'failed' AND LOWER(l.contact_email) = LOWER(?)`,
       email,
     );
     return row?.sent_at;
   }
 
   hasSentToLead(leadId: string): boolean {
-    const row = this.db.get<{ c: number }>('SELECT COUNT(*) AS c FROM outreach_log WHERE lead_id = ?', leadId);
+    const row = this.db.get<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM outreach_log WHERE lead_id = ? AND status != 'failed'",
+      leadId,
+    );
     return Number(row?.c ?? 0) > 0;
   }
 

@@ -22,6 +22,7 @@ export interface InboundReplyInput {
 export type ReplyOutcome =
   | { outcome: 'unknown_sender' }
   | { outcome: 'duplicate' }
+  | { outcome: 'failed'; leadId: string; jobId: string; error: string }
   | {
       outcome: 'processed';
       leadId: string;
@@ -84,26 +85,36 @@ export class ConversationService {
       externalId: input.externalId,
       provider: input.provider,
     });
+
+    // M4-2: a webhook replay of an UNPROCESSED message re-enters the
+    // pipeline instead of being short-circuited — a transient classification
+    // failure must never permanently orphan a customer reply.
+    let message: MessageRecord;
     if (added.duplicate) {
+      if (!input.externalId) return { outcome: 'duplicate' };
+      const existing = this.deps.conversations.tryGetByExternalId(conversation.id, input.externalId);
+      if (!existing || existing.direction !== 'inbound') return { outcome: 'duplicate' };
+      if (this.deps.conversations.isProcessed(existing.id)) return { outcome: 'duplicate' };
+      message = existing;
       this.deps.audit.append({
         actor: 'provider',
         actorType: 'provider',
         action: 'webhook.received',
         leadId: lead.id,
         jobId: job.id,
-        details: { note: 'duplicate externalId ignored (idempotent replay)' },
+        details: { messageId: message.id, note: 'unprocessed replay; re-entering pipeline' },
       });
-      return { outcome: 'duplicate' };
+    } else {
+      message = added.message as MessageRecord;
+      this.deps.audit.append({
+        actor: 'provider',
+        actorType: 'provider',
+        action: 'reply.received',
+        leadId: lead.id,
+        jobId: job.id,
+        details: { messageId: message.id, from: input.fromEmail, subject: input.subject ?? null, provider: input.provider ?? 'unknown' },
+      });
     }
-    const message = added.message as MessageRecord;
-    this.deps.audit.append({
-      actor: 'provider',
-      actorType: 'provider',
-      action: 'reply.received',
-      leadId: lead.id,
-      jobId: job.id,
-      details: { messageId: message.id, from: input.fromEmail, subject: input.subject ?? null, provider: input.provider ?? 'unknown' },
-    });
 
     // 1) Classify. SalesAgent runs deterministic opt-out detection FIRST and
     // records the decision (agent_runs + audit) before any model call.
@@ -112,19 +123,36 @@ export class ConversationService {
       body: m.bodyText,
       sentAt: m.createdAt,
     }));
-    const classified = await this.deps.salesAgent.classifyReply({
-      jobId: job.id,
-      businessName: this.deps.leads.requireBusiness(lead.businessId).name,
-      conversationHistory: history,
-      latestMessage: input.body,
-    });
+    let classified: Awaited<ReturnType<SalesAgent['classifyReply']>>;
+    try {
+      classified = await this.deps.salesAgent.classifyReply({
+        jobId: job.id,
+        businessName: this.deps.leads.requireBusiness(lead.businessId).name,
+        conversationHistory: history,
+        latestMessage: input.body,
+      });
+    } catch (err) {
+      // Message stays unprocessed; a webhook retry will re-enter the pipeline.
+      const error = err instanceof Error ? err.message : String(err);
+      this.deps.audit.append({
+        actor: 'system',
+        actorType: 'system',
+        action: 'error.occurred',
+        leadId: lead.id,
+        jobId: job.id,
+        details: { stage: 'reply_classification', messageId: message.id, error },
+      });
+      return { outcome: 'failed', leadId: lead.id, jobId: job.id, error };
+    }
     const classification = classified.classification;
     const via: 'deterministic' | 'agent' =
       classified.model === 'deterministic-optout-detector' ? 'deterministic' : 'agent';
 
     // 2) Enforce opt-out: suppress email AND domain, transition, close thread.
     if (classification.intent === 'opt_out') {
-      return this.applyOptOut(job, lead, input, message, via, classification);
+      const outcome = this.applyOptOut(job, lead, input, message, via, classification);
+      this.deps.conversations.markProcessed(message.id);
+      return outcome;
     }
 
     // 3) Persist extracted requirements (only what the customer actually said).
@@ -199,6 +227,10 @@ export class ConversationService {
       });
     }
 
+    // Pipeline complete: mark the message processed (a webhook replay is now
+    // a genuine duplicate rather than a re-entry).
+    this.deps.conversations.markProcessed(message.id);
+
     this.deps.audit.append({
       actor: 'agent:sales',
       actorType: 'agent',
@@ -237,11 +269,16 @@ export class ConversationService {
     via: 'deterministic' | 'agent',
     classification: ReplyClassification,
   ): ReplyOutcome {
+    // L4-2 trade-off (documented): DETERMINISTIC opt-out evidence suppresses
+    // email AND domain (high confidence, inject-resistant). An AGENT-detected
+    // opt-out suppresses only the email — a domain-wide block is sticky and
+    // could be triggered by injection in reply content, so domain suppression
+    // on agent classification is flagged for owner confirmation instead.
     if (lead.contactEmail) {
       this.deps.suppressions.add(lead.contactEmail, 'email', 'customer opt-out', 'inbound-email');
     }
     const domain = lead.websiteUrl ? this.hostOf(lead.websiteUrl) : (lead.contactEmail?.split('@')[1] ?? null);
-    if (domain) {
+    if (domain && via === 'deterministic') {
       this.deps.suppressions.add(domain, 'domain', 'customer opt-out', 'inbound-email');
     }
     this.deps.audit.append({
@@ -250,8 +287,18 @@ export class ConversationService {
       action: 'optout.recorded',
       leadId: lead.id,
       jobId: job.id,
-      details: { messageId: message.id, via, evidence: input.body.slice(0, 200) },
+      details: { messageId: message.id, via, domainSuppressed: domain !== null && via === 'deterministic', evidence: input.body.slice(0, 200) },
     });
+    if (domain && via !== 'deterministic') {
+      this.deps.audit.append({
+        actor: 'system',
+        actorType: 'system',
+        action: 'human_review.requested',
+        leadId: lead.id,
+        jobId: job.id,
+        details: { reason: 'confirm domain-level suppression after agent-detected opt-out', domain },
+      });
+    }
 
     const transitionsApplied: WorkflowState[] = [];
     if (!TERMINAL_STATES.has(job.state)) {
@@ -310,6 +357,9 @@ export class ConversationService {
 
     const buildPhaseStates: WorkflowState[] = ['READY_TO_BUILD', 'BUILDING', 'REVIEWING', 'REVISION_REQUIRED', 'PREVIEW_READY', 'PREVIEW_SENT', 'AWAITING_CLIENT_APPROVAL', 'CLIENT_APPROVED', 'AWAITING_PAYMENT', 'PAYMENT_CONFIRMED', 'READY_FOR_PRODUCTION', 'DEPLOYING', 'NEEDS_HUMAN_REVIEW', 'FAILED'];
 
+    // NOTE: intent 'opt_out' never reaches this planner — it returns early in
+    // the pipeline (deterministic detector runs first; agent-detected opt-outs
+    // are enforced identically in applyOptOut).
     switch (classification.intent) {
       case 'negative':
         return { transitions: ['NEEDS_HUMAN_REVIEW'], sendReply: false, flagHumanReview: true };
@@ -348,9 +398,9 @@ export class ConversationService {
             return { transitions: [], sendReply: false, flagHumanReview: true };
         }
       }
-      case 'opt_out':
-        return { transitions: ['OPTED_OUT'], sendReply: false, flagHumanReview: false };
     }
+    // Defensive unreachable: all intents are handled above.
+    return { transitions: [], sendReply: false, flagHumanReview: true };
   }
 
   private hostOf(url: string): string {

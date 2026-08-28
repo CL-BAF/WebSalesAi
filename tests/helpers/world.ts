@@ -10,6 +10,7 @@ import { SettingsRepository } from '../../src/db/repositories/settings.js';
 import { IdempotencyRepository } from '../../src/db/repositories/idempotency.js';
 import { AgentRunRepository } from '../../src/db/repositories/agentRuns.js';
 import { AuditEventRepository } from '../../src/db/repositories/auditEvents.js';
+import { WebsiteProjectRepository } from '../../src/db/repositories/websiteProjects.js';
 import { WorkflowEngine } from '../../src/engine/workflowEngine.js';
 import { AgentFramework } from '../../src/agents/framework.js';
 import { SalesAgent } from '../../src/crm/salesAgent.js';
@@ -30,6 +31,7 @@ export interface World {
   conversations: ConversationRepository;
   outreachRepo: OutreachRepository;
   requirements: RequirementRepository;
+  projects: WebsiteProjectRepository;
   settings: SettingsRepository;
   idempotency: IdempotencyRepository;
   runs: AgentRunRepository;
@@ -58,6 +60,7 @@ export function makeWorld(opts: {
   const conversations = new ConversationRepository(db);
   const outreachRepo = new OutreachRepository(db);
   const requirements = new RequirementRepository(db);
+  const projects = new WebsiteProjectRepository(db);
   const settings = new SettingsRepository(db);
   const idempotency = new IdempotencyRepository(db);
   const runs = new AgentRunRepository(db);
@@ -80,6 +83,7 @@ export function makeWorld(opts: {
   const salesAgent = new SalesAgent(framework, { runs, audit, log });
   const email = new MockEmailProvider();
   const outreach = new OutreachService({
+    db,
     leads,
     jobs,
     suppressions,
@@ -107,7 +111,7 @@ export function makeWorld(opts: {
     log,
   });
   return {
-    db, leads, jobs, suppressions, conversations, outreachRepo, requirements, settings,
+    db, leads, jobs, suppressions, conversations, outreachRepo, requirements, projects, settings,
     idempotency, runs, audit, engine, salesAgent, framework, email, outreach,
     conversationsService, config, now: opts.now ?? (() => new Date()),
   };

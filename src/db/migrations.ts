@@ -263,6 +263,19 @@ CREATE INDEX IF NOT EXISTS idx_leads_host ON leads(website_host) WHERE website_h
 DROP INDEX IF EXISTS idx_leads_website;
 `,
   },
+  {
+    // H4-1 transactional outbox: outreach_log rows get a processing status
+    // ('sending' -> 'sent' | 'failed'); inbound messages get a processed flag
+    // so a failed classification retry re-enters the pipeline (M4-2); leads
+    // get a normalized contact email for '+tag'-aware matching (M4-3).
+    name: '003_outbox_and_processing',
+    sql: `
+ALTER TABLE outreach_log ADD COLUMN status TEXT NOT NULL DEFAULT 'sent';
+ALTER TABLE messages ADD COLUMN processed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE leads ADD COLUMN contact_email_normalized TEXT;
+CREATE INDEX IF NOT EXISTS idx_leads_email_norm ON leads(contact_email_normalized) WHERE contact_email_normalized IS NOT NULL;
+`,
+  },
 ];
 
 export class MigrationDriftError extends Error {

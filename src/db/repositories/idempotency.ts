@@ -9,33 +9,33 @@ export class IdempotencyScopeError extends AppError {
 }
 
 /**
- * Generic idempotency helper for external side effects (emails, invoices,
- * deployments).
+ * Idempotency layer for external side effects (emails, invoices, deployments).
  *
- * runOnce(key, scope, fn) guarantees:
- *  - fn executes at most once per key for truly-completed runs (replays return
- *    the stored result without calling fn);
- *  - if fn THROWS, the key is released (row deleted) so the action can be
- *    retried cleanly — a failed attempt must never poison the key;
- *  - concurrent duplicate invocations while fn is still executing are
- *    rejected ("in flight") rather than double-executed.
- *
- * At-most-once safety for external effects does NOT rest on this row alone:
- * it comes from the DB unique constraints (outreach_log.idempotency_key,
+ * At-most-once safety for external effects does NOT rest on these rows alone:
+ * it comes from DB unique constraints (outreach_log.idempotency_key,
  * deployments.idempotency_key, payments.idempotency_key,
  * messages(conversation_id, external_id), payment_events(provider, event_id))
  * plus provider-side idempotency keys.
  *
- * Residual crash window: if the process dies between fn's external effect and
- * this row's completion, the row remains completed_at=NULL and replays are
- * rejected as in-flight. Recovery is operator cleanup of that single row
- * (DELETE FROM idempotency_keys WHERE key = ?); the unique constraints then
- * make a retry a no-op at the DB level even if the provider would re-accept.
+ * For actions that await an external provider, use the TRANSACTIONAL OUTBOX
+ * pattern — claim() in a short sync tx (with all guards), then perform the
+ * network call with NO transaction open, then complete() in a short sync tx.
+ * A crash between claim and complete leaves the key in flight; recovery is
+ * operator cleanup of that single row (the unique constraints make the retry
+ * a DB-level no-op even if the provider would re-accept). Never hold a
+ * transaction open across network I/O: async transactions on a shared SQLite
+ * connection cannot guarantee concurrency ownership.
  */
 export class IdempotencyRepository {
   constructor(private readonly db: Database) {}
 
-  async runOnce<T>(key: string, scope: string, fn: () => T | Promise<T>): Promise<{ fresh: boolean; result: T }> {
+  /**
+   * Claims a key synchronously. Returns { fresh: true } when this caller owns
+   * the key, or { fresh: false, result } with the cached result when the
+   * action already completed. Throws when the key is in flight (true
+   * concurrency) or the scope mismatches.
+   */
+  claim(key: string, scope: string): { fresh: true } | { fresh: false; result: unknown } {
     const at = nowIso();
     const inserted = this.db.run(
       'INSERT OR IGNORE INTO idempotency_keys (key, scope, created_at) VALUES (?, ?, ?)',
@@ -43,37 +43,14 @@ export class IdempotencyRepository {
       scope,
       at,
     );
-    if (Number(inserted.changes) === 1) {
-      // We own the key. Execute fn INSIDE a transaction so the stored result
-      // and any DB side effects commit atomically (async fn keeps the
-      // transaction open across awaits). On failure, release the key so the
-      // caller can retry.
-      try {
-        const result = (await this.db.transaction(async () => {
-          const value = (await fn()) as T;
-          this.db.run(
-            'UPDATE idempotency_keys SET result_json = ?, completed_at = ? WHERE key = ?',
-            JSON.stringify({ value: value ?? null }),
-            nowIso(),
-            key,
-          );
-          return value;
-        })) as T;
-        return { fresh: true, result };
-      } catch (err) {
-        this.db.run('DELETE FROM idempotency_keys WHERE key = ?', key);
-        throw err;
-      }
-    }
+    if (Number(inserted.changes) === 1) return { fresh: true };
 
-    // Key exists: compare scope, then return the cached result for completed
-    // runs or reject true concurrent execution.
     const row = this.db.get<{ result_json: string | null; completed_at: string | null; scope: string }>(
       'SELECT result_json, completed_at, scope FROM idempotency_keys WHERE key = ?',
       key,
     );
     if (!row) {
-      // Raced with a failed-claim release; caller can simply retry.
+      // Raced with a failed-claim release; caller may simply retry.
       throw new AppError('IDEMPOTENCY_RETRY', `idempotency key ${key} was released concurrently; retry`);
     }
     if (row.scope !== scope) {
@@ -82,10 +59,44 @@ export class IdempotencyRepository {
     if (row.completed_at === null) {
       throw new AppError('IDEMPOTENCY_IN_FLIGHT', `idempotent action "${scope}" with key ${key} is currently in flight`);
     }
-    if (row.result_json === null) {
-      return { fresh: false, result: undefined as T };
+    if (row.result_json === null) return { fresh: false, result: undefined };
+    return { fresh: false, result: (JSON.parse(row.result_json) as { value: unknown }).value };
+  }
+
+  /** Completes a claimed key and stores its result (call inside a sync tx). */
+  complete(key: string, result: unknown): void {
+    this.db.run(
+      'UPDATE idempotency_keys SET result_json = ?, completed_at = ? WHERE key = ?',
+      JSON.stringify({ value: result ?? null }),
+      nowIso(),
+      key,
+    );
+  }
+
+  /** Releases a claimed key after failure so the action can be retried. */
+  release(key: string): void {
+    this.db.run('DELETE FROM idempotency_keys WHERE key = ?', key);
+  }
+
+  /**
+   * Convenience wrapper for SHORT synchronous side effects. Do NOT use for
+   * network I/O — use claim/complete/release (outbox) instead.
+   */
+  async runOnce<T>(key: string, scope: string, fn: () => T | Promise<T>): Promise<{ fresh: boolean; result: T }> {
+    const claimResult = this.claim(key, scope);
+    if (!claimResult.fresh) {
+      return { fresh: false, result: claimResult.result as T };
     }
-    const parsed = JSON.parse(row.result_json) as { value: T };
-    return { fresh: false, result: parsed.value };
+    try {
+      const result = (await this.db.transactionAsync(async () => {
+        const value = (await fn()) as T;
+        this.complete(key, value);
+        return value;
+      })) as T;
+      return { fresh: true, result };
+    } catch (err) {
+      this.release(key);
+      throw err;
+    }
   }
 }

@@ -1,4 +1,5 @@
 import { newId, nowIso } from '../../domain/ids.js';
+import { normalizeEmail } from './suppressions.js';
 import type { Database } from '../database.js';
 
 export interface BusinessRecord {
@@ -103,15 +104,17 @@ export class LeadRepository {
       );
       const leadId = newId('lead');
       const websiteHost = input.websiteUrl ? normalizeWebsiteHost(input.websiteUrl) : null;
+      const emailNormalized = input.contactEmail ? normalizeEmail(input.contactEmail) : null;
       this.db.run(
-        `INSERT INTO leads (id, business_id, website_url, website_host, contact_name, contact_email, contact_source, discovery_source, discovery_detail, score, confidence, dossier_json, selection_reason, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
+        `INSERT INTO leads (id, business_id, website_url, website_host, contact_name, contact_email, contact_email_normalized, contact_source, discovery_source, discovery_detail, score, confidence, dossier_json, selection_reason, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
         leadId,
         bizId,
         input.websiteUrl ?? null,
         websiteHost,
         input.contactName ?? null,
         input.contactEmail ?? null,
+        emailNormalized,
         input.contactSource ?? null,
         input.source,
         input.discoveryDetail ?? null,
@@ -149,9 +152,12 @@ export class LeadRepository {
   }
 
   tryGetByEmail(email: string): LeadRecord | undefined {
+    // M4-3: '+tag' subaddressing and case are normalized on both sides, so a
+    // reply from user+news@x.com matches a lead stored as user@x.com.
+    const normalized = normalizeEmail(email);
     const row = this.db.get<Record<string, unknown>>(
-      'SELECT * FROM leads WHERE LOWER(contact_email) = LOWER(?)',
-      email,
+      'SELECT * FROM leads WHERE contact_email_normalized = ?',
+      normalized,
     );
     return row ? rowToLead(row) : undefined;
   }

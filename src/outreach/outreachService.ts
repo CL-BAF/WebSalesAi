@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { ExternalActionError, ValidationError } from '../domain/errors.js';
 import { evaluateSendGuards, startOfUtcDay, type SendGuardVerdict } from './policy.js';
 import type { EmailProvider } from './emailProvider.js';
+import type { Database } from '../db/database.js';
 import type { LeadRepository, LeadRecord } from '../db/repositories/leads.js';
 import type { WorkflowJobRepository } from '../db/repositories/workflowJobs.js';
 import type { SuppressionRepository } from '../db/repositories/suppressions.js';
@@ -16,9 +18,12 @@ import type { ResearcherDossier } from '../agents/schemas.js';
 import type { AppConfig } from '../config.js';
 import type { Logger } from '../logger.js';
 
-export type SendResult = { sent: true; providerMessageId: string } | { sent: false; reason: string };
+export type SendResult =
+  | { sent: true; providerMessageId: string; fresh: boolean }
+  | { sent: false; reason: string; fresh: false };
 
 export interface OutreachServiceDeps {
+  db: Database;
   leads: LeadRepository;
   jobs: WorkflowJobRepository;
   suppressions: SuppressionRepository;
@@ -54,9 +59,11 @@ class SendBlockedError extends Error {
  */
 export class OutreachService {
   private readonly now: () => Date;
+  private readonly db: Database;
 
   constructor(private readonly deps: OutreachServiceDeps) {
     this.now = deps.now ?? (() => new Date());
+    this.db = deps.db;
   }
 
   private killSwitch(): boolean {
@@ -154,7 +161,6 @@ export class OutreachService {
     });
     return this.sendDraft(draft);
   }
-
   /** Owner rejects: draft marked rejected; lead returns to READY_FOR_OUTREACH. */
   rejectDraft(draftId: string, decidedBy: string): { done: true } {
     const draft = this.deps.outreach.requireDraft(draftId);
@@ -199,7 +205,6 @@ export class OutreachService {
         throw new ValidationError(`cannot send draft for job in state ${current.state}`);
       }
     }
-
     const result = await this.deliver({
       leadId: lead.id,
       jobId: draft.jobId,
@@ -211,7 +216,7 @@ export class OutreachService {
       isReply: false,
     });
 
-    if (result.sent && !alreadyLogged) {
+    if (result.sent && result.fresh) {
       const state = this.deps.jobs.requireById(draft.jobId).state;
       if (state === 'AWAITING_OUTREACH_APPROVAL' || state === 'READY_FOR_OUTREACH') {
         this.deps.engine.transition(draft.jobId, 'OUTREACH_SENT', {
@@ -249,13 +254,16 @@ export class OutreachService {
       return this.block(verdict.guard, verdict.reason, job.id, leadId, { kind: 'conversation_reply' });
     }
 
+    // M4-1: full-body hash + inbound message discriminator — distinct replies
+    // can never collide on a truncated prefix.
+    const bodyHash = createHash('sha256').update(body).digest('hex').slice(0, 32);
     return this.deliver({
       leadId,
       jobId: job.id,
       to: lead.contactEmail,
       subject,
       body,
-      idempotencyKey: `outreach:reply:${leadId}:${Buffer.from(body).toString('base64url').slice(0, 32)}`,
+      idempotencyKey: `outreach:reply:${leadId}:${inReplyToMessageId ?? 'cold'}:${bodyHash}`,
       details: { kind: 'conversation_reply', inReplyToMessageId },
       inReplyToMessageId,
       isReply: true,
@@ -272,10 +280,10 @@ export class OutreachService {
       details: { guard, reason, ...extra },
     });
     this.deps.log.warn({ guard, reason, jobId }, 'outbound email blocked');
-    return { sent: false, reason };
+    return { sent: false, reason, fresh: false };
   }
 
-  /** Exactly-once delivery wrapper shared by drafts and replies. */
+  /** Exactly-once delivery via TRANSACTIONAL OUTBOX (no tx across network I/O). */
   private async deliver(args: {
     leadId: string;
     jobId: string;
@@ -287,30 +295,47 @@ export class OutreachService {
     inReplyToMessageId?: string;
     isReply: boolean;
   }): Promise<SendResult> {
-    const job = this.deps.jobs.requireById(args.jobId);
-    const lead = this.deps.leads.requireLead(args.leadId);
+    // Replay: if this action already completed, return the cached result.
+    const claim = this.deps.idempotency.claim(args.idempotencyKey, 'outreach');
+    if (!claim.fresh) {
+      const cached = claim.result as { providerMessageId: string } | undefined;
+      return cached?.providerMessageId
+        ? { sent: true, providerMessageId: cached.providerMessageId, fresh: false }
+        : { sent: true, providerMessageId: 'unknown', fresh: false };
+    }
+
     try {
-      const result = await this.deps.idempotency.runOnce(args.idempotencyKey, 'outreach', async () => {
-        // GUARD RE-CHECK INSIDE the send transaction: suppression lists, kill
-        // switch, pause and rate limits are re-evaluated atomically with the
-        // outreach_log insert, so a mid-pipeline opt-out or limit change
-        // cannot slip between check and send. (The write lock held across the
-        // provider call is deliberate: it serializes sends and makes the
-        // count-then-insert daily-limit logic exact. MVP volumes make this
-        // acceptable; revisit only with an async queue design.)
-        const recheck = this.guardContext(lead, this.now(), args.isReply);
+      // PHASE 1 (sync tx): guards + never-cold-contact refusal + outbox row.
+      this.db.transaction(() => {
+        const recheck = this.guardContext(this.deps.leads.requireLead(args.leadId), this.now(), args.isReply);
         if (!recheck.allowed) throw new SendBlockedError(recheck.guard, recheck.reason);
-
-        const sent = await this.deps.emailProvider.send({
-          to: args.to,
-          subject: args.subject,
-          body: args.body,
-          leadId: args.leadId,
+        if (args.isReply && !this.deps.outreach.hasSentToLead(args.leadId)) {
+          // Concurrency-safe: inside the same tx as the outbox claim, so two
+          // racing replies to a never-contacted lead cannot both pass.
+          throw new SendBlockedError('never_contacted', 'refusing to email a lead that was never contacted');
+        }
+        this.deps.outreach.openLog({
           jobId: args.jobId,
+          leadId: args.leadId,
           idempotencyKey: args.idempotencyKey,
-          inReplyToMessageId: args.inReplyToMessageId,
+          provider: this.deps.emailProvider.name,
         });
+      });
 
+      // PHASE 2: provider call with NO transaction open — other flows can
+      // transact freely; a failure here cannot roll back unrelated writes.
+      const sent = await this.deps.emailProvider.send({
+        to: args.to,
+        subject: args.subject,
+        body: args.body,
+        leadId: args.leadId,
+        jobId: args.jobId,
+        idempotencyKey: args.idempotencyKey,
+        inReplyToMessageId: args.inReplyToMessageId,
+      });
+
+      // PHASE 3 (sync tx): message + completed log + audit + key completion.
+      this.db.transaction(() => {
         const conversation =
           this.deps.conversations.tryGetByLeadAndChannel(args.leadId, 'email') ??
           this.deps.conversations.createForLead(args.leadId, 'email', args.to, args.subject);
@@ -323,16 +348,8 @@ export class OutreachService {
           externalId: sent.providerMessageId,
           provider: this.deps.emailProvider.name,
         });
-        this.deps.outreach.addLog({
-          jobId: args.jobId,
-          leadId: args.leadId,
-          conversationId: conversation.id,
-          messageId: added.message?.id,
-          idempotencyKey: args.idempotencyKey,
-          provider: this.deps.emailProvider.name,
-          providerMessageId: sent.providerMessageId,
-        });
-
+        this.deps.outreach.completeLog(args.idempotencyKey, sent.providerMessageId, added.message?.id ?? '');
+        this.deps.idempotency.complete(args.idempotencyKey, { providerMessageId: sent.providerMessageId });
         this.deps.audit.append({
           actor: 'system',
           actorType: 'system',
@@ -341,14 +358,14 @@ export class OutreachService {
           leadId: args.leadId,
           details: { provider: this.deps.emailProvider.name, providerMessageId: sent.providerMessageId, ...args.details },
         });
-        return { providerMessageId: sent.providerMessageId };
       });
-      return { sent: true, providerMessageId: result.result.providerMessageId };
+      return { sent: true, providerMessageId: sent.providerMessageId, fresh: true };
     } catch (err) {
+      // Release the key so a later retry is possible; mark the outbox row.
+      this.deps.outreach.failLog(args.idempotencyKey, err instanceof Error ? err.message : String(err));
+      this.deps.idempotency.release(args.idempotencyKey);
       if (err instanceof SendBlockedError) {
-        // runOnce released the idempotency key on throw, so a later retry is
-        // possible once the guard clears.
-        return this.block(err.guard, err.reason, args.jobId, job.leadId, args.details);
+        return { ...this.block(err.guard, err.reason, args.jobId, args.leadId, args.details), fresh: false };
       }
       throw err;
     }

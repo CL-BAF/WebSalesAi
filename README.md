@@ -31,7 +31,7 @@ capabilities are implemented and verified by tests:
 | CRM threading, reply classification, requirements capture | Implemented |
 | Outreach guards (approval, kill switch, limits, cooldown, suppression at send time) | Implemented |
 | CRM, conversations, outreach | Planned |
-| Website generation workspace + Builder | Planned |
+| Website generation workspace + Builder | Implemented |
 | Reviewer QA loop | Planned |
 | Preview / production deployment | Planned |
 | Payment integration + webhooks | Planned |
@@ -245,8 +245,17 @@ retry bounds, injection wrapping, and API-key leak prevention.
 - **Production deployment** requires reviewer PASS + explicit client approval
   + confirmed payment. Deployment credentials never enter model prompts.
 - **No arbitrary shell access for models.** Website builds run through an
-  allowlisted command layer with timeouts (implemented with the generation
-  subsystem).
+  allowlisted command layer (`src/website/exec.ts`): only `git` (fixed
+  subcommand set, dangerous args refused) and `node --version` may run, with
+  cwd containment, no shell, and bounded time/output. Model output never
+  reaches the command layer — only file content, written through
+  schema-validated, containment-checked, symlink-proof paths.
+- **Transactional outbox for all provider calls** (email today; payments and
+  deployments use the same idempotency layer): guards are re-checked inside a
+  short sync transaction that claims the work, the network call runs with NO
+  transaction open, and completion is a second short transaction. Sync
+  transactions refuse to interleave with an open async transaction, so no
+  flow's writes can be trapped in another's rollback.
 - Secrets only from environment; `.env` is gitignored; logs redact secrets.
 
 ## Repository layout

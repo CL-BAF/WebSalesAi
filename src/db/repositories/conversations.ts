@@ -108,8 +108,8 @@ export class ConversationRepository {
     const at = nowIso();
     try {
       this.db.run(
-        `INSERT INTO messages (id, conversation_id, direction, sender, subject, body_text, external_id, provider, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, conversation_id, direction, sender, subject, body_text, external_id, provider, processed, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
         id,
         input.conversationId,
         input.direction,
@@ -129,6 +129,25 @@ export class ConversationRepository {
     this.db.run('UPDATE conversations SET updated_at = ? WHERE id = ?', nowIso(), input.conversationId);
     const row = this.db.get<Record<string, unknown>>('SELECT * FROM messages WHERE id = ?', id);
     return { message: rowToMessage(row!), duplicate: false };
+  }
+
+  /** Finds an existing inbound message by provider external id (replay path). */
+  tryGetByExternalId(conversationId: string, externalId: string): MessageRecord | undefined {
+    const row = this.db.get<Record<string, unknown>>(
+      'SELECT * FROM messages WHERE conversation_id = ? AND external_id = ?',
+      conversationId,
+      externalId,
+    );
+    return row ? rowToMessage(row) : undefined;
+  }
+
+  markProcessed(messageId: string): void {
+    this.db.run('UPDATE messages SET processed = 1 WHERE id = ?', messageId);
+  }
+
+  isProcessed(messageId: string): boolean {
+    const row = this.db.get<{ processed: number }>('SELECT processed FROM messages WHERE id = ?', messageId);
+    return Number(row?.processed ?? 0) === 1;
   }
 
   listMessages(conversationId: string, limit = 500): MessageRecord[] {

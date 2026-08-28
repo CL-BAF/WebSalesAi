@@ -1,12 +1,15 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { ConflictError } from '../domain/errors.js';
 
 export type SqlParams = string | number | bigint | Uint8Array | null;
 
 export class Database {
   private readonly db: DatabaseSync;
   private txDepth = 0;
+  private asyncTxOpen = false;
+  private asyncChain: Promise<void> = Promise.resolve();
 
   constructor(filePath: string) {
     if (filePath !== ':memory:') {
@@ -31,18 +34,21 @@ export class Database {
   }
 
   /**
-   * Runs fn inside a BEGIN IMMEDIATE transaction (serializes writers, so
-   * check-then-act sequences are atomic). Nested calls join the outer tx.
-   * Supports async fn: the transaction stays open across awaits and commits
-   * on resolution / rolls back on rejection. NOTE: on a single shared
-   * connection, interleaved async work from other flows would execute inside
-   * this open transaction — call paths that hold a tx across an await must
-   * be short and are expected to serialize global writes (this is relied on
-   * by the outreach send path for exact rate limits).
+   * Synchronous transaction. Nested calls join the open tx. Async fn is a
+   * programming error: it is rolled back and refused — async work must use
+   * transactionAsync() so the connection's write ownership is explicit.
+   * Throws ConflictError if an async transaction is currently open (another
+   * flow must not interleave with it, or its writes could be trapped in the
+   * async tx and lost on rollback — H4-1).
    */
-  transaction<T>(fn: () => Promise<T>): Promise<T>;
-  transaction<T>(fn: () => T): T;
-  transaction(fn: () => unknown): unknown {
+  transaction<T>(fn: () => T): T {
+    if (this.asyncTxOpen) {
+      // Must precede the nested-join check: while an async transaction holds
+      // the connection, a sync caller cannot be distinguished from the async
+      // flow itself, and its writes could be trapped in the async tx (lost on
+      // rollback). Async tx bodies must use plain statements, not nesting.
+      throw new ConflictError('an async transaction is open on this connection; refusing to interleave a sync transaction');
+    }
     if (this.txDepth > 0) return fn();
     this.db.exec('BEGIN IMMEDIATE');
     this.txDepth++;
@@ -50,26 +56,55 @@ export class Database {
     try {
       result = fn();
     } catch (err) {
-      // fn threw synchronously — release the transaction before propagating.
       this.rollbackQuietly();
       throw err;
     }
     if (result instanceof Promise) {
-      return result.then(
+      this.rollbackQuietly();
+      throw new ConflictError('transaction() is synchronous; use transactionAsync() for async work');
+    }
+    try {
+      this.db.exec('COMMIT');
+      return result as T;
+    } catch (err) {
+      this.rollbackQuietly();
+      throw err;
+    } finally {
+      if (this.txDepth > 0) this.txDepth--;
+    }
+  }
+
+  /**
+   * Async transactions, serialized through a mutex chain so two async
+   * transactions can never interleave with each other. Sync transactions
+   * refuse to run while one is open. Reserved for future short-await use;
+   * network I/O belongs in the transactional-outbox pattern instead.
+   */
+  transactionAsync<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.txDepth > 0) return fn();
+    const run = this.asyncChain.then(() => {
+      this.asyncTxOpen = true;
+      this.db.exec('BEGIN IMMEDIATE');
+      this.txDepth++;
+      return fn().then(
         (value) => {
           this.db.exec('COMMIT');
           this.txDepth--;
+          this.asyncTxOpen = false;
           return value;
         },
         (err) => {
           this.rollbackQuietly();
+          this.asyncTxOpen = false;
           throw err;
         },
       );
-    }
-    this.db.exec('COMMIT');
-    this.txDepth--;
-    return result;
+    });
+    this.asyncChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   private rollbackQuietly(): void {
