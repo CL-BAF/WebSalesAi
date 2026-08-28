@@ -28,6 +28,8 @@ capabilities are implemented and verified by tests:
 | SSRF-guarded website fetching (redirect hops validated, size/time bounded) | Implemented |
 | Lead import (dedupe by website host, suppression list) + Researcher agent | Implemented |
 | Actor-gated transitions (money/deploy/human-review edges restricted by actor type) | Implemented |
+| CRM threading, reply classification, requirements capture | Implemented |
+| Outreach guards (approval, kill switch, limits, cooldown, suppression at send time) | Implemented |
 | CRM, conversations, outreach | Planned |
 | Website generation workspace + Builder | Planned |
 | Reviewer QA loop | Planned |
@@ -120,10 +122,24 @@ Source: `src/domain/workflow.ts`, applied by `src/engine/workflowEngine.ts`.
 
 SQLite via the built-in `node:sqlite` driver (no native addons). Checksummed
 ordered migrations in `src/db/migrations.ts` run automatically at boot.
+
+> **Note:** migration `001` was amended while the schema was still
+> pre-release, so its checksum changed. If you created a database with an
+> older build, boot now fails with `MigrationDriftError` — this is expected,
+> not a bug: delete your dev database file and reboot (dev data only).
+> Never modify an applied migration once real data exists; add a new
+> migration instead.
+
 Entities: businesses, leads, workflow_jobs, conversations, messages,
 outreach_drafts, outreach_log, suppression_entries, website_projects,
 requirements, agent_runs, reviews, deployments, payments, payment_events,
 audit_events, idempotency_keys, app_settings.
+
+**Lead deduplication is host-based** (one lead per website host, `002`
+migration): importing a second lead with the same domain returns `duplicate`
+with an audit trail. Caveat: multi-tenant hosts (marketplace/directory
+profile URLs) will falsely dedupe — the skip is audited and visible, and the
+suppression/import path remains under owner control.
 
 Repository queries are scoped by entity ids (job/lead/conversation) — no
 global table scans for job-scoped data.
@@ -216,8 +232,11 @@ retry bounds, injection wrapping, and API-key leak prevention.
 - **Global outbound kill switch** and **pause automation** toggle (env-seeded,
   runtime-toggleable via `app_settings`).
 - Outreach limits: per-day cap, per-domain daily cap, per-contact cooldown,
-  suppression list, opt-out enforcement (planned subsystems build on the
-  already-implemented state machine `OPTED_OUT` guard).
+  suppression list (with `+tag` subaddress normalization), opt-out
+  enforcement. Guards are re-evaluated **inside** the send transaction so a
+  mid-pipeline opt-out cannot slip through; conversation replies skip only the
+  cold-contact cooldown/domain caps (a customer who just wrote to us gets an
+  answer), never the kill switch, pause, suppression, or global daily cap.
 - **Payments are deterministic application code.** The AI may only request
   payment creation after verified customer approval; the amount, currency,
   and merchant come from configuration (`PRICING_TIERS_JSON`). Payment status

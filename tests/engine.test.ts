@@ -143,15 +143,15 @@ describe('workflow engine', () => {
 });
 
 describe('idempotency', () => {
-  test('runOnce executes once and replays cached result', () => {
+  test('runOnce executes once and replays cached result', async () => {
     const repo = new IdempotencyRepository(db);
     let calls = 0;
-    const first = repo.runOnce('send:1', 'outreach', () => {
+    const first = await repo.runOnce('send:1', 'outreach', () => {
       calls++;
       return { providerId: 'p1' };
     });
     assert.equal(first.fresh, true);
-    const second = repo.runOnce('send:1', 'outreach', () => {
+    const second = await repo.runOnce('send:1', 'outreach', () => {
       calls++;
       return { providerId: 'p2' };
     });
@@ -163,16 +163,16 @@ describe('idempotency', () => {
   test('in-flight key blocks duplicate execution', () => {
     const repo = new IdempotencyRepository(db);
     db.run("INSERT INTO idempotency_keys (key, scope, created_at) VALUES ('k1', 'scope', '2026-01-01')");
-    assert.throws(() => repo.runOnce('k1', 'scope', () => 1), /in flight/);
+    void assert.rejects(() => repo.runOnce('k1', 'scope', () => 1), /in flight/);
   });
 
-  test('failing fn releases the key so the action can be retried', () => {
+  test('failing fn releases the key so the action can be retried', async () => {
     const repo = new IdempotencyRepository(db);
-    assert.throws(() => repo.runOnce('k3', 'scope', () => { throw new Error('boom'); }), /boom/);
+    await assert.rejects(() => repo.runOnce('k3', 'scope', () => { throw new Error('boom'); }), /boom/);
     const row = db.get<{ completed_at: string | null }>("SELECT completed_at FROM idempotency_keys WHERE key = 'k3'");
     assert.equal(row, undefined, 'key row must be deleted after failure');
     let calls = 0;
-    const second = repo.runOnce('k3', 'scope', () => {
+    const second = await repo.runOnce('k3', 'scope', () => {
       calls++;
       return 'recovered';
     });
@@ -181,9 +181,9 @@ describe('idempotency', () => {
     assert.equal(calls, 1);
   });
 
-  test('result and side effects commit atomically', () => {
+  test('result and side effects commit atomically', async () => {
     const repo = new IdempotencyRepository(db);
-    assert.throws(
+    await assert.rejects(
       () =>
         repo.runOnce('k2', 'scope', () => {
           db.run("INSERT INTO suppression_entries (id, value, kind, reason, source, created_at) VALUES ('s1', 'spam.example', 'domain', 'test', 'test', '2026')");
@@ -195,9 +195,9 @@ describe('idempotency', () => {
     assert.equal(db.get<{ c: number }>('SELECT COUNT(*) AS c FROM idempotency_keys WHERE key = \'k2\'')?.c, 0);
   });
 
-  test('replay with a different scope is rejected', () => {
+  test('replay with a different scope is rejected', async () => {
     const repo = new IdempotencyRepository(db);
-    repo.runOnce('k4', 'payments', () => 42);
-    assert.throws(() => repo.runOnce('k4', 'outreach', () => 1), /scope/);
+    await repo.runOnce('k4', 'payments', () => 42);
+    await assert.rejects(() => repo.runOnce('k4', 'outreach', () => 1), /scope/);
   });
 });

@@ -10,11 +10,24 @@ export interface SuppressionEntryRecord {
   createdAt: string;
 }
 
+/**
+ * Normalizes an email for matching: lowercases and strips '+tag'
+ * subaddressing (user+news@x.com matches user@x.com).
+ */
+export function normalizeEmail(email: string): string {
+  const cleaned = email.trim().toLowerCase();
+  const at = cleaned.lastIndexOf('@');
+  if (at <= 0) return cleaned;
+  const local = cleaned.slice(0, at).split('+')[0]!;
+  const domain = cleaned.slice(at + 1);
+  return `${local}@${domain}`;
+}
+
 export class SuppressionRepository {
   constructor(private readonly db: Database) {}
 
   add(value: string, kind: 'email' | 'domain', reason: string, source: string): SuppressionEntryRecord {
-    const normalized = kind === 'email' ? value.trim().toLowerCase() : normalizeDomain(value);
+    const normalized = kind === 'email' ? normalizeEmail(value) : normalizeDomain(value);
     const id = newId('sup');
     const at = nowIso();
     this.db.run(
@@ -41,7 +54,7 @@ export class SuppressionRepository {
   }
 
   isSuppressedEmail(email: string): boolean {
-    const normalized = email.trim().toLowerCase();
+    const normalized = normalizeEmail(email);
     const direct = this.db.get<{ id: string }>("SELECT id FROM suppression_entries WHERE kind = 'email' AND value = ?", normalized);
     if (direct) return true;
     const domain = normalized.split('@')[1] ?? '';

@@ -33,25 +33,52 @@ export class Database {
   /**
    * Runs fn inside a BEGIN IMMEDIATE transaction (serializes writers, so
    * check-then-act sequences are atomic). Nested calls join the outer tx.
+   * Supports async fn: the transaction stays open across awaits and commits
+   * on resolution / rolls back on rejection. NOTE: on a single shared
+   * connection, interleaved async work from other flows would execute inside
+   * this open transaction — call paths that hold a tx across an await must
+   * be short and are expected to serialize global writes (this is relied on
+   * by the outreach send path for exact rate limits).
    */
-  transaction<T>(fn: () => T): T {
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
+  transaction<T>(fn: () => T): T;
+  transaction(fn: () => unknown): unknown {
     if (this.txDepth > 0) return fn();
     this.db.exec('BEGIN IMMEDIATE');
     this.txDepth++;
+    let result: unknown;
     try {
-      const result = fn();
-      this.db.exec('COMMIT');
-      return result;
+      result = fn();
     } catch (err) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // rollback of an already-aborted tx; nothing further to do
-      }
+      // fn threw synchronously — release the transaction before propagating.
+      this.rollbackQuietly();
       throw err;
-    } finally {
-      this.txDepth--;
     }
+    if (result instanceof Promise) {
+      return result.then(
+        (value) => {
+          this.db.exec('COMMIT');
+          this.txDepth--;
+          return value;
+        },
+        (err) => {
+          this.rollbackQuietly();
+          throw err;
+        },
+      );
+    }
+    this.db.exec('COMMIT');
+    this.txDepth--;
+    return result;
+  }
+
+  private rollbackQuietly(): void {
+    try {
+      this.db.exec('ROLLBACK');
+    } catch {
+      // rollback of an already-aborted tx; nothing further to do
+    }
+    this.txDepth = Math.max(0, this.txDepth - 1);
   }
 
   run(sql: string, ...params: SqlParams[]): { changes: number | bigint; lastInsertRowid: number | bigint } {

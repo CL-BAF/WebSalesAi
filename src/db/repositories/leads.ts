@@ -148,6 +148,14 @@ export class LeadRepository {
     return row ? rowToLead(row) : undefined;
   }
 
+  tryGetByEmail(email: string): LeadRecord | undefined {
+    const row = this.db.get<Record<string, unknown>>(
+      'SELECT * FROM leads WHERE LOWER(contact_email) = LOWER(?)',
+      email,
+    );
+    return row ? rowToLead(row) : undefined;
+  }
+
   updateResearch(
     leadId: string,
     data: { score: number; confidence: number; dossierJson: string },

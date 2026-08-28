@@ -35,7 +35,7 @@ export class IdempotencyScopeError extends AppError {
 export class IdempotencyRepository {
   constructor(private readonly db: Database) {}
 
-  runOnce<T>(key: string, scope: string, fn: () => T): { fresh: boolean; result: T } {
+  async runOnce<T>(key: string, scope: string, fn: () => T | Promise<T>): Promise<{ fresh: boolean; result: T }> {
     const at = nowIso();
     const inserted = this.db.run(
       'INSERT OR IGNORE INTO idempotency_keys (key, scope, created_at) VALUES (?, ?, ?)',
@@ -45,12 +45,12 @@ export class IdempotencyRepository {
     );
     if (Number(inserted.changes) === 1) {
       // We own the key. Execute fn INSIDE a transaction so the stored result
-      // and any DB side effects commit atomically. On failure, release the
-      // key (the transaction rollback undoes side effects; the delete here
-      // undoes the claim) so the caller can retry.
+      // and any DB side effects commit atomically (async fn keeps the
+      // transaction open across awaits). On failure, release the key so the
+      // caller can retry.
       try {
-        const result = this.db.transaction(() => {
-          const value = fn();
+        const result = (await this.db.transaction(async () => {
+          const value = (await fn()) as T;
           this.db.run(
             'UPDATE idempotency_keys SET result_json = ?, completed_at = ? WHERE key = ?',
             JSON.stringify({ value: value ?? null }),
@@ -58,7 +58,7 @@ export class IdempotencyRepository {
             key,
           );
           return value;
-        });
+        })) as T;
         return { fresh: true, result };
       } catch (err) {
         this.db.run('DELETE FROM idempotency_keys WHERE key = ?', key);

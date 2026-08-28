@@ -3,6 +3,9 @@ import { AgentFramework } from '../agents/framework.js';
 import { wrapUntrusted } from '../agents/injection.js';
 import { outreachDraftSchema, replyClassificationSchema, type OutreachDraft, type ReplyClassification } from '../agents/schemas.js';
 import type { ResearcherDossier } from '../agents/schemas.js';
+import type { AgentRunRepository } from '../db/repositories/agentRuns.js';
+import type { AuditEventRepository } from '../db/repositories/auditEvents.js';
+import type { Logger } from '../logger.js';
 
 /** Deterministic opt-out detection — runs BEFORE any AI classification. */
 const OPT_OUT_PATTERNS = [
@@ -41,7 +44,39 @@ export interface ClassifyReplyInput {
  * wrapped untrusted data.
  */
 export class SalesAgent {
-  constructor(private readonly framework: AgentFramework) {}
+  constructor(
+    private readonly framework: AgentFramework,
+    private readonly persistence?: { runs: AgentRunRepository; audit: AuditEventRepository; log: Logger },
+  ) {}
+
+  /**
+   * Deterministic (non-LLM) classification results are persisted as agent_runs
+   * rows with model='deterministic-optout-detector' so compliance-critical
+   * decisions leave the same durable trail as model runs.
+   */
+  private recordDeterministic(jobId: string | undefined, classification: ReplyClassification): void {
+    if (!this.persistence) return;
+    const { runs, audit } = this.persistence;
+    const run = runs.start({
+      role: 'sales',
+      model: 'deterministic-optout-detector',
+      purpose: 'sales:classify_reply',
+      jobId,
+      attempt: 1,
+    });
+    runs.finish(run.id, {
+      status: 'succeeded',
+      outputJson: JSON.stringify(classification),
+      usageJson: JSON.stringify({ note: 'no model invocation (deterministic keyword match)' }),
+    });
+    audit.append({
+      actor: 'agent:sales',
+      actorType: 'agent',
+      action: 'agent.run_finished',
+      jobId,
+      details: { runId: run.id, status: 'succeeded', deterministic: true, intent: classification.intent },
+    });
+  }
 
   async draftOutreach(input: DraftOutreachInput): Promise<{ draft: OutreachDraft; model: string; attempts: number }> {
     const res = await this.framework.runStructured({
@@ -72,16 +107,15 @@ export class SalesAgent {
 
   async classifyReply(input: ClassifyReplyInput): Promise<{ classification: ReplyClassification; model: string }> {
     if (detectOptOut(input.latestMessage)) {
-      return {
-        classification: {
-          intent: 'opt_out',
-          confidence: 1,
-          summary: 'Deterministic opt-out keyword detection matched the reply.',
-          extractedRequirements: [],
-          needsHumanReview: false,
-        },
-        model: 'deterministic-optout-detector',
+      const classification: ReplyClassification = {
+        intent: 'opt_out',
+        confidence: 1,
+        summary: 'Deterministic opt-out keyword detection matched the reply.',
+        extractedRequirements: [],
+        needsHumanReview: false,
       };
+      this.recordDeterministic(input.jobId, classification);
+      return { classification, model: 'deterministic-optout-detector' };
     }
 
     const res = await this.framework.runStructured({
