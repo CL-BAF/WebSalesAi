@@ -49,7 +49,7 @@ export interface FullPipeline {
  * review → preview deploy. Review verdict and payment confirmation are
  * configurable; tests drive remaining state via the engine.
  */
-export async function makeFullPipeline(opts: { reviewVerdict?: 'PASS' | 'CHANGES_REQUIRED'; requirePayment?: string; paymentConfirmed?: boolean; researchFirst?: boolean } = {}): Promise<FullPipeline> {
+export async function makeFullPipeline(opts: { reviewVerdict?: 'PASS' | 'CHANGES_REQUIRED'; requirePayment?: string; paymentConfirmed?: boolean; researchFirst?: boolean; paymentWebhookSecret?: string } = {}): Promise<FullPipeline> {
   const base = mkdtempSync(path.join(tmpdir(), 'wsa-full-'));
   const previews = mkdtempSync(path.join(tmpdir(), 'wsa-prev-'));
   const productions = mkdtempSync(path.join(tmpdir(), 'wsa-prod-'));
@@ -94,7 +94,12 @@ export async function makeFullPipeline(opts: { reviewVerdict?: 'PASS' | 'CHANGES
     return { model: req.model, content: JSON.stringify({ subject: 'S', body: 'B' }), usage: {} };
   };
   const world = makeWorld({
-    configOverrides: { OUTREACH_ENABLED: 'true', WORKSPACES_ROOT: base, REQUIRE_PAYMENT_FOR_PRODUCTION: opts.requirePayment ?? 'true' },
+    configOverrides: {
+      OUTREACH_ENABLED: 'true',
+      WORKSPACES_ROOT: base,
+      REQUIRE_PAYMENT_FOR_PRODUCTION: opts.requirePayment ?? 'true',
+      PAYMENT_WEBHOOK_SECRET: opts.paymentWebhookSecret ?? '',
+    },
     transport,
   });
   const build = new WebsiteBuildService({
@@ -121,6 +126,9 @@ export async function makeFullPipeline(opts: { reviewVerdict?: 'PASS' | 'CHANGES
     log,
   });
   const deployments = new DeploymentRepository(world.db);
+  // Late-bound job id: assigned in the seed section below, read by the
+  // payment-confirmation closure at deploy time.
+  const jobIdLate: { id: string } = { id: '' };
   const deploy = new DeploymentService({
     config: world.config,
     db: world.db,
@@ -134,7 +142,8 @@ export async function makeFullPipeline(opts: { reviewVerdict?: 'PASS' | 'CHANGES
     audit: world.audit,
     previewProvider: new LocalDeploymentProvider('preview', previews, world.config.publicBaseUrl),
     productionProvider: new LocalDeploymentProvider('production', productions, world.config.publicBaseUrl),
-    isPaymentConfirmed: () => opts.paymentConfirmed ?? false,
+    isPaymentConfirmed: () => opts.paymentConfirmed ?? world.payments.isPaid(jobIdLate.id),
+    // Late-bound: jobId is assigned after construction (researchFirst path).
     outreach: world.outreach,
     log,
   });
@@ -178,6 +187,7 @@ export async function makeFullPipeline(opts: { reviewVerdict?: 'PASS' | 'CHANGES
     jobId = seeded.jobId;
   }
   world.requirements.add({ jobId, category: 'pages', title: 'Home page', detail: 'Welcome page with menu summary', source: 'customer_reply' });
+  jobIdLate.id = jobId;
   // Reach READY_TO_BUILD through the REAL outreach path so the email thread
   // exists (the preview link send requires a contacted lead).
   const outreach = await world.outreach.draftOutreach(leadId, { actor: 'agent:sales', actorType: 'agent' });
