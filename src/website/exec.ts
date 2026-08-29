@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+﻿import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { ValidationError } from '../domain/errors.js';
@@ -105,11 +105,14 @@ export async function runAllowlisted(cmd: AllowlistedCommand, baseDir: string): 
     }
   }
 
-  // wrangler runs as `node <wrangler-cli> …` — the CLI itself is the
+  // wrangler runs as `node <wrangler-cli> â€¦` â€” the CLI itself is the
   // only script node may execute, and args are validated above.
   const exe = cmd.exe === 'wrangler' ? process.execPath : cmd.exe;
   const argv = cmd.exe === 'wrangler' ? [resolveWranglerCli(), ...cmd.args] : cmd.args;
-  const childEnv = cmd.exe === 'wrangler' ? { ...process.env, ...cmd.env } : undefined;
+  // M-S5-1: env ALLOWLIST â€” the wrangler child never inherits the parent's
+  // full environment (which holds email/payment/session secrets). It gets
+  // only OS essentials plus explicitly-approved Cloudflare variables.
+  const childEnv = cmd.exe === 'wrangler' ? buildWranglerChildEnv(cmd.env ?? {}) : undefined;
 
   return new Promise<CommandResult>((resolve, reject) => {
     const child = spawn(exe, argv, {
@@ -141,4 +144,51 @@ export async function runAllowlisted(cmd: AllowlistedCommand, baseDir: string): 
       resolve({ code: code ?? -1, stdout, stderr, timedOut });
     });
   });
+}
+
+/**
+ * M-S5-1: environment ALLOWLIST for the wrangler child. The child receives
+ * ONLY OS essentials plus explicitly-approved Cloudflare variables from the
+ * caller â€” never the parent's full environment (which may hold email,
+ * payment and session secrets).
+ */
+const WRANGLER_ENV_ALLOWLIST = [
+  'PATH',
+  'PATHEXT',
+  'SystemRoot',
+  'SystemDrive',
+  'COMSPEC',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'TMP',
+  'TEMP',
+  'PROGRAMFILES',
+  'ProgramFiles(x86)',
+];
+
+const WRANGLER_ENV_PASSTHROUGH = new Set([
+  'CLOUDFLARE_API_TOKEN',
+  'CLOUDFLARE_ACCOUNT_ID',
+  'CI',
+  'WRANGLER_SEND_METRICS',
+]);
+
+/** Passthrough keys accepted onto the wrangler child env, validated strictly. */
+export function buildWranglerChildEnv(passed: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of WRANGLER_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  for (const [key, value] of Object.entries(passed)) {
+    // Passthrough keys must ALSO be on the allowlist â€” cmd.env cannot inject
+    // arbitrary variables into the child.
+    if (WRANGLER_ENV_ALLOWLIST.includes(key) || WRANGLER_ENV_PASSTHROUGH.has(key)) {
+      env[key] = value;
+    }
+  }
+  return env;
 }

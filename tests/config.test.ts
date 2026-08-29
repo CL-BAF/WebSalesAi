@@ -81,4 +81,58 @@ describe('config', () => {
     assert.equal(loadConfig({ ...baseEnv(), OUTREACH_ENABLED: '0' }).outreach.enabled, false);
     assert.throws(() => loadConfig({ ...baseEnv(), OUTREACH_ENABLED: 'maybe' }), ConfigError);
   });
+
+  test('S9: real provider selection without credentials fails closed with named issues', () => {
+    assert.throws(
+      () => loadConfig({ ...baseEnv(), EMAIL_PROVIDER: 'resend' }),
+      (err: unknown) => err instanceof ConfigError && (
+        err.issues.some((i) => i.includes('RESEND_API_KEY')) &&
+        err.issues.some((i) => i.includes('RESEND_FROM')) &&
+        err.issues.some((i) => i.includes('RESEND_WEBHOOK_SECRET'))
+      ),
+    );
+    assert.throws(
+      () => loadConfig({ ...baseEnv(), PAYMENT_PROVIDER: 'stripe' }),
+      (err: unknown) => err instanceof ConfigError && err.issues.some((i) => i.includes('STRIPE_SECRET_KEY')),
+    );
+    assert.throws(
+      () => loadConfig({ ...baseEnv(), DEPLOYMENT_PROVIDER: 'cloudflare' }),
+      (err: unknown) => err instanceof ConfigError && err.issues.some((i) => i.includes('CLOUDFLARE_API_TOKEN')),
+    );
+  });
+
+  test('S9: stripe keys must carry recognizable test/live prefixes', () => {
+    assert.throws(
+      () => loadConfig({ ...baseEnv(), PAYMENT_PROVIDER: 'stripe', STRIPE_SECRET_KEY: 'sk_bogus', STRIPE_WEBHOOK_SECRET: 'whsec_x' }),
+      (err: unknown) => err instanceof ConfigError && err.issues.some((i) => i.includes('sk_test_') || /unrecognized/.test(i)),
+    );
+  });
+
+  test('S9: placeholder secrets rejected in NODE_ENV=production', () => {
+    assert.throws(
+      () => loadConfig({
+        ...baseEnv(),
+        NODE_ENV: 'production',
+        DASHBOARD_PASSWORD: 'change-me-please',
+        SESSION_SECRET: 'some-long-random-session-secret-value',
+      }),
+      (err: unknown) => err instanceof ConfigError && err.issues.some((i) => i.includes('DASHBOARD_PASSWORD') && /placeholder/.test(i)),
+    );
+    assert.throws(
+      () => loadConfig({ ...baseEnv(), NODE_ENV: 'production', DASHBOARD_PASSWORD: 'pw', SESSION_SECRET: 'change-me-session' }),
+      (err: unknown) => err instanceof ConfigError && err.issues.some((i) => i.includes('SESSION_SECRET') && /placeholder/.test(i)),
+    );
+  });
+
+  test('S11: readiness gate flag defaults to false and parses strictly', () => {
+    assert.equal(loadConfig(baseEnv()).productionExternalActionsEnabled, false);
+    assert.equal(loadConfig({ ...baseEnv(), PRODUCTION_EXTERNAL_ACTIONS_ENABLED: 'true' }).productionExternalActionsEnabled, true);
+    assert.throws(() => loadConfig({ ...baseEnv(), PRODUCTION_EXTERNAL_ACTIONS_ENABLED: 'sure' }), ConfigError);
+  });
 });
+
+const placeholderIssues: string[] = [];
+function placeholderRejected() {}
+const placeholder = undefined;
+void placeholderRejectedHelper;
+function placeholderRejectedHelper() {}
