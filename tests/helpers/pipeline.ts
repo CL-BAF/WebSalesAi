@@ -11,6 +11,9 @@ import { WebsiteBuildService } from '../../src/website/buildService.js';
 import { BuilderAgent } from '../../src/website/builder.js';
 import { ReviewService } from '../../src/review/reviewService.js';
 import { ReviewerAgent } from '../../src/review/reviewer.js';
+import { LeadService } from '../../src/leads/leadService.js';
+import { ResearcherAgent } from '../../src/leads/researcher.js';
+import assert from 'node:assert/strict';
 import type { OllamaTransport, OllamaChatRequest, OllamaChatResult } from '../../src/agents/ollamaClient.js';
 
 const log = createLogger('error');
@@ -46,11 +49,31 @@ export interface FullPipeline {
  * review → preview deploy. Review verdict and payment confirmation are
  * configurable; tests drive remaining state via the engine.
  */
-export async function makeFullPipeline(opts: { reviewVerdict?: 'PASS' | 'CHANGES_REQUIRED'; requirePayment?: string; paymentConfirmed?: boolean } = {}): Promise<FullPipeline> {
+export async function makeFullPipeline(opts: { reviewVerdict?: 'PASS' | 'CHANGES_REQUIRED'; requirePayment?: string; paymentConfirmed?: boolean; researchFirst?: boolean } = {}): Promise<FullPipeline> {
   const base = mkdtempSync(path.join(tmpdir(), 'wsa-full-'));
   const previews = mkdtempSync(path.join(tmpdir(), 'wsa-prev-'));
   const productions = mkdtempSync(path.join(tmpdir(), 'wsa-prod-'));
   const transport: OllamaTransport = async (req: OllamaChatRequest): Promise<OllamaChatResult> => {
+    // [SIMULATED agent] Researcher produces a qualified dossier when the
+    // E2E drives the real research flow (researchFirst: true).
+    if (req.messages.some((m) => m.content.includes('Analyse this business lead'))) {
+      return {
+        model: req.model,
+        content: JSON.stringify({
+          businessName: 'Sandbox Bakery',
+          websitePresent: true,
+          summary: 'Bakery with a dated website.',
+          verifiedFacts: [{ claim: 'Operates a bakery', source: 'website' }],
+          inferredObservations: [],
+          identifiedProblems: [{ title: 'No mobile layout', evidence: 'viewport meta missing', severity: 'high' }],
+          score: 78,
+          confidence: 0.85,
+          recommendForOutreach: true,
+          rejectionReasons: [],
+        }),
+        usage: {},
+      };
+    }
     if (req.messages.some((m) => m.content.includes('Generate a complete, production-quality STATIC website'))) {
       return { model: req.model, content: JSON.stringify(GOOD_SITE), usage: {} };
     }
@@ -116,7 +139,44 @@ export async function makeFullPipeline(opts: { reviewVerdict?: 'PASS' | 'CHANGES
     log,
   });
 
-  const { leadId, jobId } = seedQualifiedLead(world);
+  // Research-first path (S10 E2E): the REAL research pipeline runs over a
+  // synthetic lead — import gates (dedupe/suppression), SSRF-guarded fetch
+  // fixture, Researcher agent (simulated), dossier persistence, and the
+  // deterministic qualification transition.
+  const leadService = new LeadService({
+    db: world.db, leads: world.leads, suppressions: world.suppressions,
+    engine: world.engine, audit: world.audit, researcher: new ResearcherAgent(world.framework),
+    config: world.config, log,
+    fetchWebsiteText: async () =>
+      '[SIMULATED fetch] Sandbox Bakery — fresh bread, family owned since 1998, open 7 days.',
+  });
+
+  let leadId: string;
+  let jobId: string;
+  if (opts.researchFirst === true) {
+    // S10: run the REAL research pipeline — [SIMULATED] website fetch
+    // (fetchWebsiteText above) and [SIMULATED agent] (transport above).
+    const imported = leadService.importLead({
+      businessName: 'Sandbox Bakery',
+      source: 'sandbox-e2e',
+      websiteUrl: 'https://sandbox-bakery.example.com',
+      contactEmail: 'owner@sandboxbakery.example.com',
+      contactSource: 'sandbox-fixture',
+      discoveryDetail: 'synthetic lead created by the sandbox E2E',
+      selectionReason: 'sandbox end-to-end demonstration',
+    }, 'owner');
+    assert.equal((imported as { outcome: string }).outcome, 'imported', 'sandbox fixture import must succeed');
+    if (imported.outcome !== 'imported') throw new Error('sandbox import failed');
+    const researched = await leadService.researchLead(imported.lead.id);
+    if (researched.outcome !== 'qualified' && researched.outcome !== 'rejected') throw new Error('research failed');
+    if (researched.outcome !== 'qualified') throw new Error('sandbox research did not qualify the lead');
+    leadId = imported.lead.id;
+    jobId = researched.job.id;
+  } else {
+    const seeded = seedQualifiedLead(world);
+    leadId = seeded.leadId;
+    jobId = seeded.jobId;
+  }
   world.requirements.add({ jobId, category: 'pages', title: 'Home page', detail: 'Welcome page with menu summary', source: 'customer_reply' });
   // Reach READY_TO_BUILD through the REAL outreach path so the email thread
   // exists (the preview link send requires a contacted lead).
