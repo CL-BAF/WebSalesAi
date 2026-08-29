@@ -1,5 +1,5 @@
 ﻿import { ValidationError } from '../domain/errors.js';
-import type { PaymentProvider } from './paymentProvider.js';
+import type { PaymentProvider, ParsedPaymentEvent } from './paymentProvider.js';
 import type { PaymentRepository } from '../db/repositories/payments.js';
 import type { WorkflowJobRepository } from '../db/repositories/workflowJobs.js';
 import type { IdempotencyRepository } from '../db/repositories/idempotency.js';
@@ -32,7 +32,7 @@ export interface CreatePaymentResult {
 
 export type WebhookResult =
   | { handled: false; duplicate: true; code: 'duplicate_event' }
-  | { handled: false; reason: string; code: 'invalid_signature' | 'not_configured' | 'unknown_reference' | 'validation_mismatch' }
+  | { handled: false; reason: string; code: 'invalid_signature' | 'not_configured' | 'unknown_reference' | 'validation_mismatch' | 'unhandled_event' }
   | { handled: true; jobId: string; paymentStatus: 'paid' | 'failed'; duplicate: false; code: 'applied' | 'idempotent_noop' };
 
 /**
@@ -140,7 +140,21 @@ export class PaymentService {
       return { handled: false, reason: 'invalid signature', code: 'invalid_signature' };
     }
 
-    const event = this.deps.paymentProvider.parseWebhookEvent(rawBody);
+    // L-S4-1: a validly-SIGNED event of an unhandled type is semantically a
+    // no-op — acknowledging it 200 keeps Stripe's 3-day retry from hammering
+    // us. Malformed payloads still propagate as validation errors (400).
+    let event: ParsedPaymentEvent;
+    try {
+      event = this.deps.paymentProvider.parseWebhookEvent(rawBody);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/unhandled.*event type/i.test(message)) {
+        this.deps.audit.append({ actor: 'provider', actorType: 'provider', action: 'webhook.received', details: { note: 'signed but unhandled event type; acknowledged inert', error: message } });
+        return { handled: false, reason: 'valid signature, unhandled event type (inert)', code: 'unhandled_event' };
+      }
+      this.deps.audit.append({ actor: 'provider', actorType: 'provider', action: 'webhook.rejected', details: { reason: 'malformed webhook payload', error: message } });
+      throw err;
+    }
     const payment = this.deps.payments.tryGetByProviderReference(event.reference);
 
     // Event-level deduplication (UNIQUE provider+event_id) in its own tx.

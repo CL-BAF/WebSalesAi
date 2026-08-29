@@ -286,6 +286,28 @@ ALTER TABLE reviews ADD COLUMN artifact_commit TEXT;
 ALTER TABLE reviews ADD COLUMN artifact_hash TEXT;
 `,
   },
+  {
+    // Stage 7 domain foundation: RECORD-ONLY registration of client/deployed
+    // domains. No DNS is ever modified by this schema or its repository —
+    // any future DNS/domain action requires a separate owner-approved
+    // provider integration that does not exist yet.
+    name: '005_domain_records',
+    sql: `
+CREATE TABLE IF NOT EXISTS job_domains (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES workflow_jobs(id),
+  kind TEXT NOT NULL CHECK (kind IN ('client_existing', 'client_desired', 'production_hostname')),
+  domain TEXT NOT NULL,
+  dns_status TEXT NOT NULL DEFAULT 'unknown',
+  verification_state TEXT NOT NULL DEFAULT 'unverified',
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_domains_job ON job_domains(job_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_domains_unique ON job_domains(job_id, kind, domain);
+`,
+  },
 ];
 
 export class MigrationDriftError extends Error {

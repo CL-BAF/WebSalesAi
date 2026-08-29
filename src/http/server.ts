@@ -101,6 +101,7 @@ export function createHttpServer(deps: HttpDeps): Express {
     if (result.code === 'invalid_signature') return res.status(401).json(result);
     if (result.code === 'not_configured') return res.status(503).json(result);
     if (result.code === 'unknown_reference') return res.status(200).json(result);
+    if (result.code === 'unhandled_event') return res.status(200).json(result);
     if (result.code === 'validation_mismatch') return res.status(400).json(result);
     res.status(400).json(result);
   }));

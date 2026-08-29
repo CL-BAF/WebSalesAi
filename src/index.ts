@@ -104,9 +104,21 @@ export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppConte
   const framework = createAgentFramework({ config, log, runs, audit } as never);
   const salesAgent = new SalesAgent(framework, { runs, audit, log });
 
+  // Stage 11 readiness gate: real providers are wired ONLY when the master
+  // gate is explicitly enabled. Otherwise mocks are wired (fail-safe) with a
+  // loud warning. The gate never disables approval/suppression/kill-switch/
+  // payment/deploy guards — it only permits configured real providers to run.
+  const externalActionsAllowed = config.productionExternalActionsEnabled;
+  if (!config.productionExternalActionsEnabled && (config.emailProvider === 'resend' || config.paymentProvider === 'stripe' || config.deploymentProvider === 'cloudflare')) {
+    log.warn(
+      { PRODUCTION_EXTERNAL_ACTIONS_ENABLED: false },
+      'Real provider(s) configured but PRODUCTION_EXTERNAL_ACTIONS_ENABLED=false — MOCK providers will be used for all external actions. Set PRODUCTION_EXTERNAL_ACTIONS_ENABLED=true to permit real side effects.',
+    );
+  }
+
   // EMAIL: mock | resend
   let email: EmailProvider = new MockEmailProvider();
-  if (config.emailProvider === 'resend') {
+    if (config.emailProvider === 'resend' && externalActionsAllowed) {
     email = new ResendEmailProvider({
       apiKey: config.resend.apiKey!,
       from: config.resend.from!,
@@ -123,7 +135,7 @@ export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppConte
 
   // PAYMENT: mock | stripe
   let paymentProvider: PaymentProvider = new MockPaymentProvider();
-  if (config.paymentProvider === 'stripe') {
+    if (config.paymentProvider === 'stripe' && externalActionsAllowed) {
     paymentProvider = new StripePaymentProvider({ secretKey: config.stripe.secretKey! });
     const live = config.stripe.secretKey!.startsWith('sk_live_');
     log.warn({ mode: live ? 'LIVE' : 'TEST' }, `PAYMENT PROVIDER: Stripe (${live ? 'LIVE' : 'TEST'}) — checkout sessions are real.`);
@@ -132,7 +144,7 @@ export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppConte
   // DEPLOYMENT: local | cloudflare
   let previewProvider: DeploymentProvider = new LocalDeploymentProvider('preview', config.previewsRoot, config.publicBaseUrl);
   let productionProvider: DeploymentProvider = new LocalDeploymentProvider('production', config.productionDeploysRoot, config.publicBaseUrl);
-  if (config.deploymentProvider === 'cloudflare') {
+    if (config.deploymentProvider === 'cloudflare' && externalActionsAllowed) {
     const cloudflare = new CloudflarePagesProvider({
       apiToken: config.cloudflare.apiToken!,
       accountId: config.cloudflare.accountId!,
@@ -158,7 +170,7 @@ export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppConte
     leads, conversations, suppressions, requirements, engine, audit, salesAgent, outreach, log,
   });
   // Inbound email pipeline (Resend) is wired after ConversationService.
-  const resendInbound = config.emailProvider === 'resend'
+    const resendInbound = config.emailProvider === 'resend' && externalActionsAllowed
     ? new ResendInboundService({ config, conversations, conversationService: conversationsService, audit, log })
     : undefined;
   const researcher = new ResearcherAgent(framework);
@@ -240,3 +252,6 @@ if (isDirectRun) {
   const ctx = createAppContext();
   void startServer(ctx);
 }
+
+
+

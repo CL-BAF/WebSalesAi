@@ -124,6 +124,9 @@ const envSchema = z.object({
   CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
   CLOUDFLARE_PAGES_PROJECT: z.string().optional(),
 
+  /** Master gate for real external actions (Stage 11): default false. */
+  PRODUCTION_EXTERNAL_ACTIONS_ENABLED: boolish.optional().transform((v) => (v === undefined ? false : v)),
+
   OUTREACH_ENABLED: boolish.optional().transform((v) => (v === undefined ? false : v)),
   OUTREACH_REQUIRE_APPROVAL: boolish.optional().transform((v) => (v === undefined ? true : v)),
   OUTREACH_MAX_PER_DAY: int({ min: 1, max: 1000, default: 20 }),
@@ -197,6 +200,9 @@ export type AppConfig = {
     pagesProject?: string;
   };
 
+  /** Master gate (Stage 11): real providers only act when true. */
+  productionExternalActionsEnabled: boolean;
+
   outreach: {
     enabled: boolean;
     requireApproval: boolean;
@@ -234,7 +240,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (nodeEnv === null) issues.push('NODE_ENV must be one of development|test|production');
   parsed['NODE_ENV'] = nodeEnv;
 
-  const schemaKeys = ['PORT', 'DATABASE_PATH', 'LOG_LEVEL', 'PUBLIC_BASE_URL', 'OLLAMA_BASE_URL', 'OLLAMA_MODEL', 'OLLAMA_MODEL_RESEARCHER', 'OLLAMA_MODEL_SALES', 'OLLAMA_MODEL_BUILDER', 'OLLAMA_MODEL_REVIEWER', 'OLLAMA_TIMEOUT_MS', 'OLLAMA_MAX_REPAIR_RETRIES', 'OLLAMA_TRANSPORT_RETRIES', 'REVIEW_MAX_CYCLES', 'EMAIL_PROVIDER', 'PAYMENT_PROVIDER', 'DEPLOYMENT_PROVIDER', 'RESEND_API_KEY', 'RESEND_FROM', 'RESEND_SENDER_DOMAIN', 'RESEND_WEBHOOK_SECRET', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_PAGES_PROJECT', 'OUTREACH_ENABLED', 'OUTREACH_REQUIRE_APPROVAL', 'OUTREACH_MAX_PER_DAY', 'OUTREACH_MAX_PER_DOMAIN_PER_DAY', 'OUTREACH_COOLDOWN_HOURS', 'OUTREACH_KILL_SWITCH', 'AUTOMATION_PAUSED', 'WORKSPACES_ROOT', 'PREVIEWS_ROOT', 'PRODUCTION_DEPLOYS_ROOT', 'PRICING_CURRENCY', 'PRICING_TIERS_JSON', 'FETCH_TIMEOUT_MS', 'FETCH_MAX_BYTES', 'EXEC_TIMEOUT_MS'] as const;
+  const schemaKeys = ['PORT', 'DATABASE_PATH', 'LOG_LEVEL', 'PUBLIC_BASE_URL', 'OLLAMA_BASE_URL', 'OLLAMA_MODEL', 'OLLAMA_MODEL_RESEARCHER', 'OLLAMA_MODEL_SALES', 'OLLAMA_MODEL_BUILDER', 'OLLAMA_MODEL_REVIEWER', 'OLLAMA_TIMEOUT_MS', 'OLLAMA_MAX_REPAIR_RETRIES', 'OLLAMA_TRANSPORT_RETRIES', 'REVIEW_MAX_CYCLES', 'EMAIL_PROVIDER', 'PAYMENT_PROVIDER', 'DEPLOYMENT_PROVIDER', 'RESEND_API_KEY', 'RESEND_FROM', 'RESEND_SENDER_DOMAIN', 'RESEND_WEBHOOK_SECRET', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_PAGES_PROJECT', 'PRODUCTION_EXTERNAL_ACTIONS_ENABLED', 'OUTREACH_ENABLED', 'OUTREACH_REQUIRE_APPROVAL', 'OUTREACH_MAX_PER_DAY', 'OUTREACH_MAX_PER_DOMAIN_PER_DAY', 'OUTREACH_COOLDOWN_HOURS', 'OUTREACH_KILL_SWITCH', 'AUTOMATION_PAUSED', 'WORKSPACES_ROOT', 'PREVIEWS_ROOT', 'PRODUCTION_DEPLOYS_ROOT', 'PRICING_CURRENCY', 'PRICING_TIERS_JSON', 'FETCH_TIMEOUT_MS', 'FETCH_MAX_BYTES', 'EXEC_TIMEOUT_MS'] as const;
 
   const partialEnv: Record<string, string | undefined> = {};
   for (const key of schemaKeys) partialEnv[key] = env[key];
@@ -355,6 +361,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       accountId: env['CLOUDFLARE_ACCOUNT_ID']?.trim() || undefined,
       pagesProject: env['CLOUDFLARE_PAGES_PROJECT']?.trim() || undefined,
     },
+
+    productionExternalActionsEnabled: (envValues['PRODUCTION_EXTERNAL_ACTIONS_ENABLED'] as boolean) ?? false,
 
     outreach: {
       enabled: (envValues['OUTREACH_ENABLED'] as boolean) ?? false,
