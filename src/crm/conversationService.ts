@@ -17,6 +17,13 @@ export interface InboundReplyInput {
   body: string;
   externalId?: string;
   provider?: string;
+  /**
+   * RFC message-ids from the inbound email's In-Reply-To/References/message-id
+   * headers. Thread resolution matches these against stored OUTBOUND message
+   * external_ids FIRST (reliable when the sender address differs), falling
+   * back to normalized sender matching.
+   */
+  threadHints?: string[];
 }
 
 export type ReplyOutcome =
@@ -60,13 +67,37 @@ export class ConversationService {
   constructor(private readonly deps: ConversationServiceDeps) {}
 
   async recordInboundReply(input: InboundReplyInput): Promise<ReplyOutcome> {
-    const lead = this.deps.leads.tryGetByEmail(input.fromEmail);
+    // Thread resolution FIRST (References/In-Reply-To against stored outbound
+    // message ids), then normalized sender match. Both must fail before the
+    // reply is treated as unknown.
+    let lead = undefined;
+    if (input.threadHints?.length) {
+      for (const hint of input.threadHints) {
+        const conversationId = this.deps.conversations.tryFindConversationByOutboundExternalId(hint);
+        if (!conversationId) continue;
+        const conversation = this.deps.conversations.requireById(conversationId);
+        lead = this.deps.leads.tryGetById(conversation.leadId);
+        if (lead) break;
+      }
+      if (lead) {
+        this.deps.audit.append({
+          actor: 'provider',
+          actorType: 'provider',
+          action: 'webhook.received',
+          leadId: lead.id,
+          details: { note: 'inbound routed via thread references', from: input.fromEmail, provider: input.provider ?? 'unknown' },
+        });
+      }
+    }
+    if (!lead) {
+      lead = this.deps.leads.tryGetByEmail(input.fromEmail);
+    }
     if (!lead) {
       this.deps.audit.append({
         actor: 'provider',
         actorType: 'provider',
         action: 'webhook.rejected',
-        details: { reason: 'no lead for sender', from: input.fromEmail, provider: input.provider ?? 'unknown' },
+        details: { reason: 'no lead for sender and no thread match', from: input.fromEmail, provider: input.provider ?? 'unknown' },
       });
       return { outcome: 'unknown_sender' };
     }

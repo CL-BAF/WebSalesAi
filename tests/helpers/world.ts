@@ -52,6 +52,8 @@ export function makeWorld(opts: {
   configOverrides?: Record<string, string>;
   transport?: OllamaTransport;
   now?: () => Date;
+  /** Override the email provider (e.g. the real Resend adapter with fake fetch). */
+  emailProvider?: import('../../src/outreach/emailProvider.js').EmailProvider;
 } = {}): World {
   const config = loadConfig({ NODE_ENV: 'test', ...opts.configOverrides } as NodeJS.ProcessEnv);
   const db = new Database(':memory:');
@@ -84,7 +86,7 @@ export function makeWorld(opts: {
     log,
   });
   const salesAgent = new SalesAgent(framework, { runs, audit, log });
-  const email = new MockEmailProvider();
+  const email = (opts.emailProvider ?? new MockEmailProvider()) as MockEmailProvider;
   const outreach = new OutreachService({
     db,
     leads,

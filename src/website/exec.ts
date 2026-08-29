@@ -1,14 +1,20 @@
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { ValidationError } from '../domain/errors.js';
 
-export type AllowedExe = 'git' | 'node';
+export type AllowedExe = 'git' | 'node' | 'wrangler';
 
 export interface AllowlistedCommand {
   exe: AllowedExe;
   args: string[];
   cwd: string;
   timeoutMs: number;
+  /**
+   * Extra environment variables (e.g. CLOUDFLARE_API_TOKEN). ONLY accepted
+   * for the wrangler allowlist entry, never logged, never placed in argv.
+   */
+  env?: Record<string, string>;
 }
 
 export interface CommandResult {
@@ -20,6 +26,21 @@ export interface CommandResult {
 
 /** Git subcommands the platform may ever execute inside a workspace. */
 const GIT_SUBCOMMANDS = new Set(['init', 'add', 'commit', 'status', 'log', 'diff', 'rev-parse', 'config']);
+
+/** Wrangler subcommands + strict argument shapes (Cloudflare Pages deploys). */
+const WRANGLER_SUBCOMMANDS = new Set(['pages']);
+const WRANGLER_PAGES_ACTIONS = new Set(['deploy', 'deployment']);
+const WRANGLER_ARG_PATTERN = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+let cachedWranglerCli: string | undefined;
+
+function resolveWranglerCli(): string {
+  if (cachedWranglerCli) return cachedWranglerCli;
+  const requireFromApp = createRequire(path.join(process.cwd(), 'package.json'));
+  // wrangler's documented programmatic entry (bin target).
+  cachedWranglerCli = requireFromApp.resolve('wrangler/wrangler-dist/cli.js');
+  return cachedWranglerCli;
+}
 
 export function isInsideDir(dir: string, candidate: string): boolean {
   const rel = path.relative(dir, candidate);
@@ -41,7 +62,7 @@ export function isInsideDir(dir: string, candidate: string): boolean {
  * written to the workspace filesystem, never passed as a command argument.
  */
 export async function runAllowlisted(cmd: AllowlistedCommand, baseDir: string): Promise<CommandResult> {
-  if (cmd.exe !== 'git' && cmd.exe !== 'node') {
+  if (cmd.exe !== 'git' && cmd.exe !== 'node' && cmd.exe !== 'wrangler') {
     throw new ValidationError(`executable not allowlisted: ${cmd.exe}`);
   }
   if (!isInsideDir(baseDir, path.resolve(cmd.cwd))) {
@@ -70,13 +91,33 @@ export async function runAllowlisted(cmd: AllowlistedCommand, baseDir: string): 
       }
     }
   }
+  if (cmd.exe === 'wrangler') {
+    if (cmd.args[0] !== 'pages' || !WRANGLER_PAGES_ACTIONS.has(cmd.args[1] ?? '')) {
+      throw new ValidationError(`wrangler pages action not allowlisted: ${cmd.args.slice(0, 2).join(' ')}`);
+    }
+    if (cmd.args[1] === 'deploy' && cmd.args[2] !== 'deploy' && !cmd.args[2]) {
+      throw new ValidationError('wrangler pages deploy requires a directory argument');
+    }
+    for (const arg of cmd.args) {
+      if (!WRANGLER_ARG_PATTERN.test(arg)) {
+        throw new ValidationError(`wrangler argument rejected: ${arg}`);
+      }
+    }
+  }
+
+  // wrangler runs as `node <wrangler-cli> …` — the CLI itself is the
+  // only script node may execute, and args are validated above.
+  const exe = cmd.exe === 'wrangler' ? process.execPath : cmd.exe;
+  const argv = cmd.exe === 'wrangler' ? [resolveWranglerCli(), ...cmd.args] : cmd.args;
+  const childEnv = cmd.exe === 'wrangler' ? { ...process.env, ...cmd.env } : undefined;
 
   return new Promise<CommandResult>((resolve, reject) => {
-    const child = spawn(cmd.exe, cmd.args, {
+    const child = spawn(exe, argv, {
       cwd: cmd.cwd,
       shell: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...(childEnv ? { env: childEnv } : {}),
     });
     let stdout = '';
     let stderr = '';

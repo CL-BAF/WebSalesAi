@@ -19,6 +19,12 @@ export interface ParsedPaymentEvent {
   type: 'payment.succeeded' | 'payment.failed';
   /** Provider reference of the checkout/payment this event belongs to. */
   reference: string;
+  /** When available: the paid amount, validated against our payment row. */
+  amountCents?: number;
+  /** When available: the currency, validated against our payment row. */
+  currency?: string;
+  /** When available: provider metadata, validated against our payment row. */
+  metadata?: Record<string, string>;
 }
 
 /**

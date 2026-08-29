@@ -1,5 +1,4 @@
 ﻿import express, { type Express, type Request, type Response } from 'express';
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -24,6 +23,7 @@ import type { WebsiteBuildService } from '../website/buildService.js';
 import type { ReviewService } from '../review/reviewService.js';
 import type { DeploymentService } from '../deploy/deploymentService.js';
 import type { PaymentService } from '../payments/paymentService.js';
+import type { ResendInboundService } from '../outreach/resendInbound.js';
 import type { AppConfig } from '../config.js';
 
 export interface HttpDeps {
@@ -36,6 +36,7 @@ export interface HttpDeps {
   reviewService: ReviewService;
   deploymentService: DeploymentService;
   paymentService: PaymentService;
+  resendInbound?: ResendInboundService;
 }
 
 type Req = Request & { sessionValid?: boolean };
@@ -100,44 +101,18 @@ export function createHttpServer(deps: HttpDeps): Express {
     if (result.code === 'invalid_signature') return res.status(401).json(result);
     if (result.code === 'not_configured') return res.status(503).json(result);
     if (result.code === 'unknown_reference') return res.status(200).json(result);
+    if (result.code === 'validation_mismatch') return res.status(400).json(result);
     res.status(400).json(result);
   }));
 
-  app.post('/webhooks/email', express.raw({ type: '*/*', limit: '2mb' }), rateLimitMiddleware(webhookLimiter, 'whmail'), asyncHandler(async (req, res) => {
-    const secret = cfg.inboundEmailWebhookSecret;
-    if (!secret) {
-      return res.status(503).json({ error: 'inbound email webhook not configured' });
-    }
-    const signature = String(req.headers['x-inbound-signature'] ?? '');
-    const raw = req.body.toString('utf8');
-    const expected = createHmac('sha256', secret).update(raw, 'utf8').digest('hex');
-    const a = Buffer.from(expected, 'utf8');
-    const b = Buffer.from(signature, 'utf8');
-    if (a.length !== b.length || !timingSafeEqual(a, b)) {
-      deps.ctx.audit.append({ actor: 'provider', actorType: 'provider', action: 'webhook.rejected', details: { reason: 'invalid inbound email signature' } });
-      return res.status(401).json({ error: 'invalid signature' });
-    }
-    let parsed: { from?: unknown; subject?: unknown; body?: unknown; externalId?: unknown; provider?: unknown };
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return res.status(400).json({ error: 'invalid JSON' });
-    }
-    if (typeof parsed.from !== 'string' || typeof parsed.body !== 'string') {
-      return res.status(400).json({ error: 'from and body are required' });
-    }
-    const result = await deps.conversations.recordInboundReply({
-      fromEmail: parsed.from,
-      subject: typeof parsed.subject === 'string' ? parsed.subject : undefined,
-      body: parsed.body,
-      externalId: typeof parsed.externalId === 'string' ? parsed.externalId : undefined,
-      provider: typeof parsed.provider === 'string' ? parsed.provider : 'inbound-webhook',
-    });
-    if (result.outcome === 'unknown_sender' || result.outcome === 'failed') {
-      return res.status(422).json(result);
-    }
-    res.status(200).json(result);
-  }));
+  // Resend inbound email webhook (svix signature scheme). Replaces the
+  // legacy /webhooks/email route (A6 — nothing external consumed it).
+  if (deps.resendInbound) {
+    app.post('/webhooks/resend', express.raw({ type: '*/*', limit: '2mb' }), rateLimitMiddleware(webhookLimiter, 'whresend'), asyncHandler(async (req, res) => {
+      const result = await deps.resendInbound!.handleWebhook(req.body.toString('utf8'), req.headers as Record<string, string | string[]>);
+      res.status(result.httpStatus).json(result.detail ?? { status: result.status });
+    }));
+  }
 
   // JSON API + dashboard statics.
   app.use(express.json({ limit: '1mb' }));
@@ -168,6 +143,37 @@ export function createHttpServer(deps: HttpDeps): Express {
   const mutating = express.Router();
   mutating.use(csrfMiddleware);
 
+  // Provider modes for the dashboard (MOCK/TEST/LIVE must be unambiguous).
+  const providerModes = (): Record<string, string> => {
+    const paymentMode = cfg.paymentProvider === 'stripe'
+      ? (cfg.stripe.secretKey?.startsWith('sk_live_') ? 'stripe_live' : 'stripe_test')
+      : 'mock';
+    return {
+      system: cfg.nodeEnv === 'production' ? 'production' : 'development',
+      email: cfg.emailProvider === 'resend' ? 'live' : 'mock',
+      outbound: !deps.ctx.settings.getBool('outreach.kill_switch', cfg.outreach.killSwitchInitial) && cfg.outreach.enabled
+        ? (cfg.outreach.requireApproval ? 'approval_required' : 'enabled')
+        : 'disabled',
+      payment: paymentMode,
+      deployment: cfg.deploymentProvider === 'cloudflare' ? 'cloudflare' : 'local',
+    };
+  };
+
+  // Ollama reachability (60s cache; Connected/Error for the dashboard).
+  let ollamaCache: { at: number; ok: boolean } | undefined;
+  const ollamaStatus = async (): Promise<'connected' | 'error'> => {
+    if (ollamaCache && Date.now() - ollamaCache.at < 60_000) return ollamaCache.ok ? 'connected' : 'error';
+    let ok = false;
+    try {
+      const res = await fetch(`${cfg.ollama.baseUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      ok = res.ok;
+    } catch {
+      ok = false;
+    }
+    ollamaCache = { at: Date.now(), ok };
+    return ok ? 'connected' : 'error';
+  };
+
   app.get('/api/summary', asyncHandler(async (_req, res) => {
     const all = deps.ctx.jobs.listAll(10_000);
     const counts: Record<string, number> = {};
@@ -182,7 +188,9 @@ export function createHttpServer(deps: HttpDeps): Express {
       killSwitch: deps.ctx.settings.getBool('outreach.kill_switch', cfg.outreach.killSwitchInitial),
       automationPaused: deps.ctx.settings.getBool('automation.paused', cfg.automationPausedInitial),
     };
-    res.json({ summary, counts, settings, outreachEnabled: cfg.outreach.enabled });
+    const modes = providerModes();
+    const ollama = await ollamaStatus();
+    res.json({ summary, counts, settings, outreachEnabled: cfg.outreach.enabled, providerModes: modes, ollamaStatus: ollama });
   }));
 
   app.get('/api/jobs', asyncHandler(async (req: Req, res) => {

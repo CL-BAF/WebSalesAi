@@ -104,9 +104,11 @@ describe('http server (dashboard + webhooks)', () => {
     void provider;
   });
 
-  test('email webhook requires signature', async () => {
-    const res = await fetch(`${baseUrl}/webhooks/email`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ from: 'x@y.com', body: 'hi' }) });
-    assert.equal(res.status, 503, 'no inbound secret configured in test env → webhook disabled (fail-closed)');
+  test('legacy /webhooks/email removed; /webhooks/resend absent in mock mode (A6)', async () => {
+    const legacy = await fetch(`${baseUrl}/webhooks/email`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ from: 'x@y.com', body: 'hi' }) });
+    assert.equal(legacy.status, 404, 'legacy inbound email route must be gone');
+    const resend = await fetch(`${baseUrl}/webhooks/resend`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(resend.status, 404, 'resend inbound route is not mounted in mock mode');
   });
 
   test('login rate limiting kicks in', async () => {

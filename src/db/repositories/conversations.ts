@@ -141,6 +141,19 @@ export class ConversationRepository {
     return row ? rowToMessage(row) : undefined;
   }
 
+  /**
+   * Thread resolution: finds the conversation owning an OUTBOUND message
+   * with the given external id (our RFC Message-ID). Used to route inbound
+   * replies by References/In-Reply-To before falling back to sender match.
+   */
+  tryFindConversationByOutboundExternalId(externalId: string): string | undefined {
+    const row = this.db.get<Record<string, unknown>>(
+      "SELECT conversation_id FROM messages WHERE external_id = ? AND direction = 'outbound'",
+      externalId,
+    );
+    return row ? String(row['conversation_id']) : undefined;
+  }
+
   markProcessed(messageId: string): void {
     this.db.run('UPDATE messages SET processed = 1 WHERE id = ?', messageId);
   }

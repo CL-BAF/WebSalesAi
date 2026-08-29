@@ -108,9 +108,21 @@ const envSchema = z.object({
   REVIEW_MAX_CYCLES: int({ min: 1, max: 20, default: 5 }),
   REQUIRE_PAYMENT_FOR_PRODUCTION: boolish.optional().transform((v) => (v === undefined ? true : v)),
 
-  EMAIL_PROVIDER: z.enum(['mock']).optional().transform((v) => v ?? 'mock'),
-  PAYMENT_PROVIDER: z.enum(['mock']).optional().transform((v) => v ?? 'mock'),
-  DEPLOYMENT_PROVIDER: z.enum(['local']).optional().transform((v) => v ?? 'local'),
+  EMAIL_PROVIDER: z.enum(['mock', 'resend']).optional().transform((v) => v ?? 'mock'),
+  PAYMENT_PROVIDER: z.enum(['mock', 'stripe']).optional().transform((v) => v ?? 'mock'),
+  DEPLOYMENT_PROVIDER: z.enum(['local', 'cloudflare']).optional().transform((v) => v ?? 'local'),
+
+  RESEND_API_KEY: z.string().optional(),
+  RESEND_FROM: z.string().optional(),
+  RESEND_SENDER_DOMAIN: z.string().optional(),
+  RESEND_WEBHOOK_SECRET: z.string().optional(),
+
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+
+  CLOUDFLARE_API_TOKEN: z.string().optional(),
+  CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
+  CLOUDFLARE_PAGES_PROJECT: z.string().optional(),
 
   OUTREACH_ENABLED: boolish.optional().transform((v) => (v === undefined ? false : v)),
   OUTREACH_REQUIRE_APPROVAL: boolish.optional().transform((v) => (v === undefined ? true : v)),
@@ -163,9 +175,27 @@ export type AppConfig = {
   reviewMaxCycles: number;
   requirePaymentForProduction: boolean;
 
-  emailProvider: 'mock';
-  paymentProvider: 'mock';
-  deploymentProvider: 'local';
+  emailProvider: 'mock' | 'resend';
+  paymentProvider: 'mock' | 'stripe';
+  deploymentProvider: 'local' | 'cloudflare';
+
+  resend: {
+    apiKey?: string;
+    from?: string;
+    senderDomain?: string;
+    webhookSecret?: string;
+  };
+
+  stripe: {
+    secretKey?: string;
+    webhookSecret?: string;
+  };
+
+  cloudflare: {
+    apiToken?: string;
+    accountId?: string;
+    pagesProject?: string;
+  };
 
   outreach: {
     enabled: boolean;
@@ -204,7 +234,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (nodeEnv === null) issues.push('NODE_ENV must be one of development|test|production');
   parsed['NODE_ENV'] = nodeEnv;
 
-  const schemaKeys = ['PORT', 'DATABASE_PATH', 'LOG_LEVEL', 'PUBLIC_BASE_URL', 'OLLAMA_BASE_URL', 'OLLAMA_MODEL', 'OLLAMA_MODEL_RESEARCHER', 'OLLAMA_MODEL_SALES', 'OLLAMA_MODEL_BUILDER', 'OLLAMA_MODEL_REVIEWER', 'OLLAMA_TIMEOUT_MS', 'OLLAMA_MAX_REPAIR_RETRIES', 'OLLAMA_TRANSPORT_RETRIES', 'REVIEW_MAX_CYCLES', 'EMAIL_PROVIDER', 'PAYMENT_PROVIDER', 'DEPLOYMENT_PROVIDER', 'OUTREACH_ENABLED', 'OUTREACH_REQUIRE_APPROVAL', 'OUTREACH_MAX_PER_DAY', 'OUTREACH_MAX_PER_DOMAIN_PER_DAY', 'OUTREACH_COOLDOWN_HOURS', 'OUTREACH_KILL_SWITCH', 'AUTOMATION_PAUSED', 'WORKSPACES_ROOT', 'PREVIEWS_ROOT', 'PRODUCTION_DEPLOYS_ROOT', 'PRICING_CURRENCY', 'PRICING_TIERS_JSON', 'FETCH_TIMEOUT_MS', 'FETCH_MAX_BYTES', 'EXEC_TIMEOUT_MS'] as const;
+  const schemaKeys = ['PORT', 'DATABASE_PATH', 'LOG_LEVEL', 'PUBLIC_BASE_URL', 'OLLAMA_BASE_URL', 'OLLAMA_MODEL', 'OLLAMA_MODEL_RESEARCHER', 'OLLAMA_MODEL_SALES', 'OLLAMA_MODEL_BUILDER', 'OLLAMA_MODEL_REVIEWER', 'OLLAMA_TIMEOUT_MS', 'OLLAMA_MAX_REPAIR_RETRIES', 'OLLAMA_TRANSPORT_RETRIES', 'REVIEW_MAX_CYCLES', 'EMAIL_PROVIDER', 'PAYMENT_PROVIDER', 'DEPLOYMENT_PROVIDER', 'RESEND_API_KEY', 'RESEND_FROM', 'RESEND_SENDER_DOMAIN', 'RESEND_WEBHOOK_SECRET', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_PAGES_PROJECT', 'OUTREACH_ENABLED', 'OUTREACH_REQUIRE_APPROVAL', 'OUTREACH_MAX_PER_DAY', 'OUTREACH_MAX_PER_DOMAIN_PER_DAY', 'OUTREACH_COOLDOWN_HOURS', 'OUTREACH_KILL_SWITCH', 'AUTOMATION_PAUSED', 'WORKSPACES_ROOT', 'PREVIEWS_ROOT', 'PRODUCTION_DEPLOYS_ROOT', 'PRICING_CURRENCY', 'PRICING_TIERS_JSON', 'FETCH_TIMEOUT_MS', 'FETCH_MAX_BYTES', 'EXEC_TIMEOUT_MS'] as const;
 
   const partialEnv: Record<string, string | undefined> = {};
   for (const key of schemaKeys) partialEnv[key] = env[key];
@@ -232,6 +262,45 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (nodeEnv !== 'test') {
     if (!dashboardPassword) issues.push('DASHBOARD_PASSWORD: required (dashboard authentication)');
     if (!sessionSecret) issues.push('SESSION_SECRET: required (session signing)');
+  }
+
+  // Provider credentials: fail closed when a real provider is selected
+  // (Stage 9 of the production-integration phase). Never log secret values.
+  const emailProvider = env['EMAIL_PROVIDER']?.trim() || 'mock';
+  const paymentProvider = env['PAYMENT_PROVIDER']?.trim() || 'mock';
+  const deploymentProvider = env['DEPLOYMENT_PROVIDER']?.trim() || 'local';
+
+  if (emailProvider === 'resend') {
+    if (!env['RESEND_API_KEY']?.trim()) issues.push('RESEND_API_KEY: required when EMAIL_PROVIDER=resend');
+    if (!env['RESEND_FROM']?.trim()) issues.push('RESEND_FROM: required when EMAIL_PROVIDER=resend (verified sender identity)');
+    if (!env['RESEND_WEBHOOK_SECRET']?.trim()) issues.push('RESEND_WEBHOOK_SECRET: required when EMAIL_PROVIDER=resend (svix webhook verification)');
+  }
+  if (paymentProvider === 'stripe') {
+    if (!env['STRIPE_SECRET_KEY']?.trim()) issues.push('STRIPE_SECRET_KEY: required when PAYMENT_PROVIDER=stripe');
+    if (!env['STRIPE_WEBHOOK_SECRET']?.trim()) issues.push('STRIPE_WEBHOOK_SECRET: required when PAYMENT_PROVIDER=stripe');
+  }
+  if (deploymentProvider === 'cloudflare') {
+    for (const key of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_PAGES_PROJECT'] as const) {
+      if (!env[key]?.trim()) issues.push(`${key}: required when DEPLOYMENT_PROVIDER=cloudflare`);
+    }
+  }
+  // Stripe test/live key mode separation (when reliably identifiable).
+  const stripeKey = env['STRIPE_SECRET_KEY']?.trim();
+  if (stripeKey && !/^(sk_test_|sk_live_)/.test(stripeKey)) {
+    issues.push('STRIPE_SECRET_KEY: unrecognized format (expected sk_test_… or sk_live_…)');
+  }
+
+  // Obvious placeholder secrets are rejected in production.
+  if (nodeEnv === 'production') {
+    const placeholders: Array<[string, string | undefined]> = [
+      ['DASHBOARD_PASSWORD', dashboardPassword],
+      ['SESSION_SECRET', sessionSecret],
+    ];
+    for (const [name, value] of placeholders) {
+      if (value && /change-?me|placeholder|example|test/i.test(value)) {
+        issues.push(`${name}: placeholder value rejected in NODE_ENV=production`);
+      }
+    }
   }
 
   if (issues.length > 0) {
@@ -265,9 +334,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     reviewMaxCycles: (envValues['REVIEW_MAX_CYCLES'] as number) ?? 5,
     requirePaymentForProduction: (envValues['REQUIRE_PAYMENT_FOR_PRODUCTION'] as boolean) ?? true,
 
-    emailProvider: 'mock',
-    paymentProvider: 'mock',
-    deploymentProvider: 'local',
+    emailProvider: (envValues['EMAIL_PROVIDER'] as AppConfig['emailProvider']) ?? 'mock',
+    paymentProvider: (envValues['PAYMENT_PROVIDER'] as AppConfig['paymentProvider']) ?? 'mock',
+    deploymentProvider: (envValues['DEPLOYMENT_PROVIDER'] as AppConfig['deploymentProvider']) ?? 'local',
+
+    resend: {
+      apiKey: env['RESEND_API_KEY']?.trim() || undefined,
+      from: env['RESEND_FROM']?.trim() || undefined,
+      senderDomain: env['RESEND_SENDER_DOMAIN']?.trim().toLowerCase() || undefined,
+      webhookSecret: env['RESEND_WEBHOOK_SECRET']?.trim() || undefined,
+    },
+
+    stripe: {
+      secretKey: env['STRIPE_SECRET_KEY']?.trim() || undefined,
+      webhookSecret: env['STRIPE_WEBHOOK_SECRET']?.trim() || undefined,
+    },
+
+    cloudflare: {
+      apiToken: env['CLOUDFLARE_API_TOKEN']?.trim() || undefined,
+      accountId: env['CLOUDFLARE_ACCOUNT_ID']?.trim() || undefined,
+      pagesProject: env['CLOUDFLARE_PAGES_PROJECT']?.trim() || undefined,
+    },
 
     outreach: {
       enabled: (envValues['OUTREACH_ENABLED'] as boolean) ?? false,

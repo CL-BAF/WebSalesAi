@@ -22,6 +22,13 @@ import { MockPaymentProvider } from './payments/providers/mockPayment.js';
 import { LocalDeploymentProvider } from './deploy/providers/localDeploy.js';
 import { OutreachService } from './outreach/outreachService.js';
 import { ConversationService } from './crm/conversationService.js';
+import { ResendEmailProvider } from './outreach/providers/resendEmail.js';
+import { ResendInboundService } from './outreach/resendInbound.js';
+import { StripePaymentProvider } from './payments/providers/stripePayment.js';
+import { CloudflarePagesProvider } from './deploy/providers/cloudflarePages.js';
+import type { EmailProvider } from './outreach/emailProvider.js';
+import type { PaymentProvider } from './payments/paymentProvider.js';
+import type { DeploymentProvider } from './deploy/deploymentProvider.js';
 import { LeadService } from './leads/leadService.js';
 import { WebsiteBuildService } from './website/buildService.js';
 import { BuilderAgent } from './website/builder.js';
@@ -53,7 +60,7 @@ export interface AppContext {
   conversations: ConversationRepository;
   outreachRepo: OutreachRepository;
   engine: WorkflowEngine;
-  email: MockEmailProvider;
+  email: EmailProvider;
   services: {
     outreach: OutreachService;
     conversations: ConversationService;
@@ -63,6 +70,7 @@ export interface AppContext {
     deploymentService: DeploymentService;
     paymentService: PaymentService;
   };
+  resendInbound?: ResendInboundService;
 }
 
 export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppContext {
@@ -91,13 +99,56 @@ export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppConte
   const outreachRepo = new OutreachRepository(db);
   const engine = new WorkflowEngine(db, jobs, audit);
 
-  // Agents and services (mock providers wired; live providers via config).
+  // Agents and services — provider selection is config-driven and fail-closed
+  // (config.ts refuses real providers without their credentials).
   const framework = createAgentFramework({ config, log, runs, audit } as never);
   const salesAgent = new SalesAgent(framework, { runs, audit, log });
-  const email = new MockEmailProvider();
-  const paymentProvider = new MockPaymentProvider();
-  const previewProvider = new LocalDeploymentProvider('preview', config.previewsRoot, config.publicBaseUrl);
-  const productionProvider = new LocalDeploymentProvider('production', config.productionDeploysRoot, config.publicBaseUrl);
+
+  // EMAIL: mock | resend
+  let email: EmailProvider = new MockEmailProvider();
+  if (config.emailProvider === 'resend') {
+    email = new ResendEmailProvider({
+      apiKey: config.resend.apiKey!,
+      from: config.resend.from!,
+      senderDomain: config.resend.senderDomain ?? (config.resend.from?.split('@')[1] ?? 'websalesai.local'),
+      timeoutMs: config.fetchTimeoutMs,
+      retries: config.ollama.transportRetries,
+      log,
+    });
+    log.warn({ mode: 'LIVE' }, 'EMAIL PROVIDER: Resend (LIVE) — outbound email is real. OUTREACH_ENABLED and approval gates still apply.');
+    if (!config.outreach.enabled) {
+      log.warn({ outreachEnabled: false }, 'Resend is configured but OUTREACH_ENABLED=false — no real email will be sent until outreach is explicitly enabled.');
+    }
+  }
+
+  // PAYMENT: mock | stripe
+  let paymentProvider: PaymentProvider = new MockPaymentProvider();
+  if (config.paymentProvider === 'stripe') {
+    paymentProvider = new StripePaymentProvider({ secretKey: config.stripe.secretKey! });
+    const live = config.stripe.secretKey!.startsWith('sk_live_');
+    log.warn({ mode: live ? 'LIVE' : 'TEST' }, `PAYMENT PROVIDER: Stripe (${live ? 'LIVE' : 'TEST'}) — checkout sessions are real.`);
+  }
+
+  // DEPLOYMENT: local | cloudflare
+  let previewProvider: DeploymentProvider = new LocalDeploymentProvider('preview', config.previewsRoot, config.publicBaseUrl);
+  let productionProvider: DeploymentProvider = new LocalDeploymentProvider('production', config.productionDeploysRoot, config.publicBaseUrl);
+  if (config.deploymentProvider === 'cloudflare') {
+    const cloudflare = new CloudflarePagesProvider({
+      apiToken: config.cloudflare.apiToken!,
+      accountId: config.cloudflare.accountId!,
+      projectName: config.cloudflare.pagesProject!,
+      previewBranch: 'preview',
+      workspacesRoot: config.workspacesRoot,
+      timeoutMs: 300_000,
+    });
+    previewProvider = cloudflare;
+    productionProvider = cloudflare;
+    log.warn({ mode: 'LIVE' }, 'DEPLOYMENT PROVIDER: Cloudflare Pages (LIVE) — deployments publish to the internet.');
+  }
+
+  if (config.nodeEnv === 'production' && (config.emailProvider === 'mock' || config.paymentProvider === 'mock' || config.deploymentProvider === 'local')) {
+    log.warn({ email: config.emailProvider, payment: config.paymentProvider, deployment: config.deploymentProvider }, 'NODE_ENV=production with mock/local providers — the system will NOT perform real external actions.');
+  }
 
   const outreach = new OutreachService({
     db, leads, jobs, suppressions, conversations, outreach: outreachRepo, settings, idempotency,
@@ -106,6 +157,10 @@ export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppConte
   const conversationsService = new ConversationService({
     leads, conversations, suppressions, requirements, engine, audit, salesAgent, outreach, log,
   });
+  // Inbound email pipeline (Resend) is wired after ConversationService.
+  const resendInbound = config.emailProvider === 'resend'
+    ? new ResendInboundService({ config, conversations, conversationService: conversationsService, audit, log })
+    : undefined;
   const researcher = new ResearcherAgent(framework);
   const leadService = new LeadService({
     db, leads, suppressions, engine, audit, researcher, config, log,
@@ -140,6 +195,7 @@ export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppConte
     services: {
       outreach, conversations: conversationsService, leadService, buildService, reviewService, deploymentService, paymentService,
     },
+    resendInbound,
   };
 }
 
@@ -159,6 +215,7 @@ export function startServer(ctx: AppContext, opts: { port?: number } = {}): { re
     reviewService: ctx.services.reviewService,
     deploymentService: ctx.services.deploymentService,
     paymentService: ctx.services.paymentService,
+    resendInbound: ctx.resendInbound,
   });
   const desiredPort = opts.port ?? ctx.config.port;
   const server = app.listen(desiredPort);

@@ -32,7 +32,7 @@ export interface CreatePaymentResult {
 
 export type WebhookResult =
   | { handled: false; duplicate: true; code: 'duplicate_event' }
-  | { handled: false; reason: string; code: 'invalid_signature' | 'not_configured' | 'unknown_reference' }
+  | { handled: false; reason: string; code: 'invalid_signature' | 'not_configured' | 'unknown_reference' | 'validation_mismatch' }
   | { handled: true; jobId: string; paymentStatus: 'paid' | 'failed'; duplicate: false; code: 'applied' | 'idempotent_noop' };
 
 /**
@@ -162,6 +162,37 @@ export class PaymentService {
     if (!payment) {
       this.deps.audit.append({ actor: 'provider', actorType: 'provider', action: 'webhook.received', details: { eventId: event.eventId, note: 'unknown payment reference' } });
       return { handled: false, reason: 'unknown payment reference', code: 'unknown_reference' };
+    }
+
+    // Deterministic cross-validation: the verified event must agree with our
+    // payment row on amount, currency and metadata. Any mismatch (tampered
+    // session, wrong-mode key, foreign session) is recorded and NOT applied.
+    const mismatches: string[] = [];
+    if (event.amountCents !== undefined && event.amountCents !== payment.amountCents) {
+      mismatches.push(`amount ${event.amountCents} != ${payment.amountCents}`);
+    }
+    if (event.currency !== undefined && event.currency.toUpperCase() !== payment.currency.toUpperCase()) {
+      mismatches.push(`currency ${event.currency} != ${payment.currency}`);
+    }
+    if (event.metadata) {
+      if (event.metadata['job_id'] !== undefined && event.metadata['job_id'] !== payment.jobId) {
+        mismatches.push('metadata job_id mismatch');
+      }
+      if (event.metadata['idempotency_key'] !== undefined && event.metadata['idempotency_key'] !== payment.idempotencyKey) {
+        mismatches.push('metadata idempotency_key mismatch');
+      }
+      if (event.metadata['pricing_tier'] !== undefined && event.metadata['pricing_tier'] !== payment.tier) {
+        mismatches.push('metadata pricing_tier mismatch');
+      }
+    }
+    if (mismatches.length > 0) {
+      this.deps.audit.append({
+        actor: 'provider',
+        actorType: 'provider',
+        action: 'webhook.rejected',
+        details: { eventId: event.eventId, reason: 'event/payment validation mismatch', mismatches },
+      });
+      return { handled: false, reason: `event validation mismatch: ${mismatches.join('; ')}`, code: 'validation_mismatch' };
     }
 
     // Link the stored event to the payment and apply status deterministically.
