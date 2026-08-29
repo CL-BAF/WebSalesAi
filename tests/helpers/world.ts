@@ -12,6 +12,7 @@ import { AgentRunRepository } from '../../src/db/repositories/agentRuns.js';
 import { AuditEventRepository } from '../../src/db/repositories/auditEvents.js';
 import { WebsiteProjectRepository } from '../../src/db/repositories/websiteProjects.js';
 import { ReviewRepository } from '../../src/db/repositories/reviews.js';
+import { PaymentRepository } from '../../src/db/repositories/payments.js';
 import { WorkflowEngine } from '../../src/engine/workflowEngine.js';
 import { AgentFramework } from '../../src/agents/framework.js';
 import { SalesAgent } from '../../src/crm/salesAgent.js';
@@ -34,6 +35,7 @@ export interface World {
   requirements: RequirementRepository;
   projects: WebsiteProjectRepository;
   reviews: ReviewRepository;
+  payments: PaymentRepository;
   settings: SettingsRepository;
   idempotency: IdempotencyRepository;
   runs: AgentRunRepository;
@@ -66,6 +68,7 @@ export function makeWorld(opts: {
   const requirements = new RequirementRepository(db);
   const projects = new WebsiteProjectRepository(db);
   const reviews = new ReviewRepository(db);
+  const payments = new PaymentRepository(db);
   const settings = new SettingsRepository(db);
   const idempotency = new IdempotencyRepository(db);
   const runs = new AgentRunRepository(db);
@@ -116,7 +119,7 @@ export function makeWorld(opts: {
     log,
   });
   return {
-    db, leads, jobs, suppressions, conversations, outreachRepo, requirements, projects, reviews, settings,
+    db, leads, jobs, suppressions, conversations, outreachRepo, requirements, projects, reviews, payments, settings,
     idempotency, runs, audit, engine, salesAgent, framework, email, outreach,
     conversationsService, config, now: opts.now ?? (() => new Date()),
   };
@@ -186,4 +189,5 @@ export function transportFor(payload: Record<string, unknown>): OllamaTransport 
 export function makeWorldWithClassification(payload: Record<string, unknown>, configOverrides: Record<string, string> = { OUTREACH_ENABLED: 'true' }): World {
   return makeWorld({ configOverrides, transport: transportFor(payload) });
 }
+
 

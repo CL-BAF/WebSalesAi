@@ -4,9 +4,9 @@ import { ResendEmailProvider } from '../src/outreach/providers/resendEmail.js';
 import {
   deterministicMessageId,
   verifySvixWebhook,
-  signSvixPayload,
   extractSvixHeaders,
 } from '../src/outreach/providers/svixVerify.js';
+import { createHmac } from 'node:crypto';
 import { ValidationError, ExternalActionError } from '../src/domain/errors.js';
 import { makeWorld, seedQualifiedLead, sendFirstOutreach, classificationPayload } from './helpers/world.js';
 import { SETTING_KEYS } from '../src/db/repositories/settings.js';
@@ -301,3 +301,9 @@ describe('resend provider behind the guard stack + thread routing', () => {
     assert.equal(replay.outcome, 'duplicate');
   });
 });
+/** Signs a payload the way Svix does — local test fixture helper (L-S2-2). */
+function signSvixPayload(rawBody: string, headers: { id: string; timestamp: string; signature: string }, webhookSecret: string): string {
+  const signedContent = `${headers.id}.${headers.timestamp}.${rawBody}`;
+  const secret = webhookSecret.startsWith('whsec_') ? webhookSecret.slice('whsec_'.length) : webhookSecret;
+  return createHmac('sha256', Buffer.from(secret, 'base64')).update(signedContent, 'utf8').digest('base64');
+}

@@ -143,7 +143,7 @@ export class ResendInboundService {
     return { status: 'processed', httpStatus: 200, detail: { outcome: result.outcome === 'duplicate' ? 'duplicate' : result.outcome } };
   }
 
-  /** GET /emails/{id} with auth, timeout, and a hard byte cap. */
+  /** GET /emails/{id} with auth, timeout, and a streamed hard byte cap. */
   private async retrieveEmail(emailId: string): Promise<RetrievedEmail> {
     const apiKey = this.deps.config.resend.apiKey;
     if (!apiKey) throw new ValidationError('resend API key not configured');
@@ -158,10 +158,24 @@ export class ResendInboundService {
     }
     const declared = Number(res.headers.get('content-length') ?? '0');
     if (declared > maxBytes) throw new ValidationError(`inbound email content too large (${declared} bytes)`);
-    const text = await res.text();
-    if (text.length > maxBytes) throw new ValidationError('inbound email content too large');
-    const parsed = JSON.parse(text) as RetrievedEmail;
-    return parsed;
+    // Stream with a hard cap (L-S2-1): chunked responses bypass content-length.
+    const reader = res.body?.getReader();
+    if (!reader) throw new ValidationError('resend retrieve returned no body');
+    const decoder = new TextDecoder();
+    let received = 0;
+    let text = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      const chunk = decoder.decode(value, { stream: true });
+      if (text.length + chunk.length > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new ValidationError('inbound email content too large');
+      }
+      text += chunk;
+    }
+    return JSON.parse(text) as RetrievedEmail;
   }
 
   /** Normalized plain-text: prefer provider-parsed text; strip tags from HTML. */

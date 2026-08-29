@@ -190,6 +190,7 @@ export class PaymentService {
         actor: 'provider',
         actorType: 'provider',
         action: 'webhook.rejected',
+        jobId: payment.jobId,
         details: { eventId: event.eventId, reason: 'event/payment validation mismatch', mismatches },
       });
       return { handled: false, reason: `event validation mismatch: ${mismatches.join('; ')}`, code: 'validation_mismatch' };

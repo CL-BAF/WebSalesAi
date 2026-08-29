@@ -47,12 +47,36 @@ async function loadSummary() {
   const data = await api('/api/summary');
   const grid = el('summary');
   grid.innerHTML = '';
+
+  // Stat counters.
   for (const [label, value] of Object.entries(data.summary)) {
     const div = document.createElement('div');
     div.className = 'stat';
-    div.innerHTML = `<b>${value}</b><span>${label}</span>`;
+    div.innerHTML = `<b>${value}</b><span>${escapeHtml(label)}</span>`;
     grid.appendChild(div);
   }
+
+  // Provider mode indicators (MOCK/TEST/LIVE must be unambiguous).
+  const modes = data.providerModes || {};
+  const modeBar = document.createElement('div');
+  modeBar.className = 'mode-bar';
+  const indicators = [
+    ['system', modes.system ?? '?'],
+    ['ollama', data.ollamaStatus ?? 'unknown'],
+    ['email', modes.email ?? 'mock'],
+    ['outbound', modes.outbound ?? 'disabled'],
+    ['payment', modes.payment ?? 'mock'],
+    ['deployment', modes.deployment ?? 'local'],
+  ];
+  for (const [key, mode] of indicators) {
+    const chip = document.createElement('span');
+    const value = String(mode);
+    const live = value === 'live' || value === 'stripe_live' || value === 'cloudflare' || value === 'production';
+    chip.className = 'mode-chip' + (live ? ' live' : '');
+    chip.textContent = `${key}: ${value}`;
+    modeBar.appendChild(chip);
+  }
+  grid.appendChild(modeBar);
   setToggle(el('btn-kill'), 'Kill switch', data.settings.killSwitch);
   setToggle(el('btn-pause'), 'Pause', data.settings.automationPaused);
   el('btn-kill').classList.toggle('armed', data.settings.killSwitch);

@@ -1,4 +1,4 @@
-﻿import { createHash, createHmac } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { Webhook as SvixWebhook } from 'svix';
 import { ValidationError } from '../../domain/errors.js';
 
@@ -65,7 +65,7 @@ export function verifySvixWebhook(
   try {
     // Official svix library: verifies `v1,` base64 HMAC-SHA256 over
     // `${id}.${timestamp}.${payload}` with the whsec_ secret, including
-    // multi-signature (rotation) support.
+    // multi-signature (rotation) support and constant-time comparison.
     const wh = new SvixWebhook(webhookSecret);
     wh.verify(rawBody, {
       'svix-id': headers.id,
@@ -85,11 +85,4 @@ export function deterministicMessageId(idempotencyKey: string, senderDomain: str
   const hash = createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);
   const domain = senderDomain.replace(/[^a-zA-Z0-9.-]/g, '') || 'websalesai.local';
   return `<wsa-${hash}@${domain}>`;
-}
-
-/** Signs a payload the way Svix does — used to generate test fixtures. */
-export function signSvixPayload(rawBody: string, headers: SvixHeaders, webhookSecret: string): string {
-  const signedContent = `${headers.id}.${headers.timestamp}.${rawBody}`;
-  const secret = webhookSecret.startsWith('whsec_') ? webhookSecret.slice('whsec_'.length) : webhookSecret;
-  return createHmac('sha256', Buffer.from(secret, 'base64')).update(signedContent, 'utf8').digest('base64');
 }

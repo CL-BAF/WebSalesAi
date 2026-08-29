@@ -15,6 +15,9 @@ button.ok { background:var(--ok); color:#003; border-color:var(--ok); }
 .login input { background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:.45rem; }
 .error { color:var(--danger); font-size:.85rem; min-height:1em; }
 .summary { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:.6rem; padding:1rem 1.2rem; }
+.mode-bar { grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:.5rem; padding:.4rem 0; }
+.mode-chip { display:inline-block; padding:.2rem .6rem; border-radius:99px; background:var(--bg); border:1px solid var(--line); font-size:.78rem; color:var(--muted); }
+.mode-chip.live { border-color:var(--danger); color:var(--danger); font-weight:600; }
 .stat { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:.6rem .8rem; }
 .stat b { display:block; font-size:1.3rem; }
 .stat span { color:var(--muted); font-size:.75rem; }
