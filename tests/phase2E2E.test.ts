@@ -28,9 +28,9 @@ function classificationTransport(payload: Record<string, unknown>): OllamaTransp
 }
 
 describe('S10 sandbox end-to-end (all external actions simulated offline)', () => {
-  test('full documented sequence reaches COMPLETED: import → gates → research → owner-approved outreach → provider send → inbound reply → requirements → build → review → preview → approval → checkout → verified webhook → production', async () => {
-    // ── [SIMULATED] import + research + OWNER-APPROVED outreach + build +
-    // review + preview deploy — driven by the pipeline fixture whose
+  test('full documented sequence reaches COMPLETED: import â†’ gates â†’ research â†’ owner-approved outreach â†’ provider send â†’ inbound reply â†’ requirements â†’ build â†’ review â†’ preview â†’ approval â†’ checkout â†’ verified webhook â†’ production', async () => {
+    // â”€â”€ [SIMULATED] import + research + OWNER-APPROVED outreach + build +
+    // review + preview deploy â€” driven by the pipeline fixture whose
     // researchFirst option runs the REAL LeadService research pipeline over
     // a synthetic lead. Preview hosting is the LOCAL provider standing in
     // for Cloudflare (clearly simulated; the real provider needs the A1 spike).
@@ -51,8 +51,8 @@ describe('S10 sandbox end-to-end (all external actions simulated offline)', () =
     assert.ok(jobAudit.some((e) => e.action === 'outreach.approved'), 'human approval audited');
     assert.ok(world.audit.listForJob(pipeline.jobId).some((e) => e.action === 'outreach.sent'));
 
-    // ── Inbound customer reply (SIMULATED webhook) through the REAL reply
-    // pipeline: opt-out check → classification → routing.
+    // â”€â”€ Inbound customer reply (SIMULATED webhook) through the REAL reply
+    // pipeline: opt-out check â†’ classification â†’ routing.
     const reply = await world.conversationsService.recordInboundReply({
       fromEmail: 'owner@sandboxbakery.example.com',
       subject: 'Re: S',
@@ -62,22 +62,22 @@ describe('S10 sandbox end-to-end (all external actions simulated offline)', () =
     });
     assert.equal(reply.outcome, 'processed');
 
-    // ── Build (real git in isolated workspace) → review → preview deploy.
+    // â”€â”€ Build (real git in isolated workspace) â†’ review â†’ preview deploy.
     await pipeline.drive();
     assert.equal(world.jobs.requireById(pipeline.jobId).state, 'AWAITING_CLIENT_APPROVAL');
     assert.ok(existsSync(path.join(pipeline.previews, pipeline.jobId, 'index.html')), 'preview deployed (SIMULATED hosting)');
 
-    // ── Customer approves the preview via reply (SIMULATED webhook).
+    // â”€â”€ Customer approves the preview via reply (SIMULATED webhook).
     await world.conversationsService.recordInboundReply({
       fromEmail: 'owner@sandboxbakery.example.com',
       subject: 'Re: Your website preview is ready',
-      body: 'Approved — please go live.',
+      body: 'Approved â€” please go live.',
       externalId: 'sbx-inbound-2',
       provider: 'resend-simulated',
     });
     assert.equal(world.jobs.requireById(pipeline.jobId).state, 'CLIENT_APPROVED');
 
-    // ── [SIMULATED Stripe TEST] checkout: deterministic pricing from config.
+    // â”€â”€ [SIMULATED Stripe TEST] checkout: deterministic pricing from config.
     world.engine.transition(pipeline.jobId, 'AWAITING_PAYMENT', { actor: 'system', actorType: 'system' });
 
     // Stripe-shaped event provider: signature check + mutable current event.
@@ -115,7 +115,7 @@ describe('S10 sandbox end-to-end (all external actions simulated offline)', () =
     assert.ok(payRow.reference.startsWith('cs_test_'));
     assert.equal(Number(payRow.amount), world.config.pricing.tiers['business'], 'amount == configured tier price');
 
-    // ── Signed webhook (SIMULATED Stripe-Signature) confirms payment.
+    // â”€â”€ Signed webhook (SIMULATED Stripe-Signature) confirms payment.
     currentEvent.value = {
       eventId: 'evt_sandbox_pay',
       type: 'payment.succeeded',
@@ -128,14 +128,14 @@ describe('S10 sandbox end-to-end (all external actions simulated offline)', () =
     assert.equal(confirmed.code, 'applied');
     assert.equal(world.jobs.requireById(pipeline.jobId).state, 'PAYMENT_CONFIRMED');
 
-    // ── Production deploy with A3 artifact binding → COMPLETED.
+    // â”€â”€ Production deploy with A3 artifact binding â†’ COMPLETED.
     world.engine.transition(pipeline.jobId, 'READY_FOR_PRODUCTION', { actor: 'system', actorType: 'system' });
     const production = await pipeline.deploy.deployProduction(pipeline.jobId);
     assert.equal(production.deployed, true);
     assert.ok(existsSync(path.join(pipeline.productions, pipeline.jobId, 'index.html')), 'production artifact deployed');
     assert.equal(world.jobs.requireById(pipeline.jobId).state, 'COMPLETED');
 
-    // ── Audit trail covers the whole journey.
+    // â”€â”€ Audit trail covers the whole journey.
     const actions = world.audit.listForJob(pipeline.jobId).map((e) => e.action);
     const expectedActions = ['lead.imported', 'research.completed', 'outreach.drafted', 'outreach.approved', 'outreach.sent', 'reply.received', 'reply.processed', 'generation.completed', 'review.completed', 'preview.deployed', 'preview.sent', 'payment.request_created', 'payment.confirmed', 'production.deployed'];
     for (const expected of expectedActions) {
@@ -147,16 +147,3 @@ describe('S10 sandbox end-to-end (all external actions simulated offline)', () =
     assert.equal(jobs.filter((j) => j.state === 'COMPLETED').length, 1);
   });
 });
-
-function expectedAction(a: string[]): string {
-  return a[0] ?? '';
-}
-function expectedActionName(): string {
-  return 'expected';
-}
-function expectedActionNameOf() {}
-const expectedActions = ['x'];
-
-function signedEvent(payload: unknown): string {
-  return JSON.stringify(payload);
-}

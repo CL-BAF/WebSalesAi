@@ -163,41 +163,11 @@ cp .env.example .env    # then edit values (secrets required outside NODE_ENV=te
 The database schema is created automatically on first boot (`DATABASE_PATH`,
 default `./data/websalesai.sqlite`).
 
-## Configuration reference
-
-See `.env.example` for the full annotated list. Highlights:
-
-| Variable | Default | Secret |
-| --- | --- | --- |
-| `NODE_ENV` | `development` | no |
-| `PORT` | `3000` | no |
-| `DATABASE_PATH` | `./data/websalesai.sqlite` | no |
-| `LOG_LEVEL` | `info` | no |
-| `DASHBOARD_PASSWORD` | required (fail-closed) | **yes** |
-| `SESSION_SECRET` | required (fail-closed) | **yes** |
-| `OLLAMA_BASE_URL` | `https://ollama.com` | no |
-| `OLLAMA_API_KEY` | — | **yes** |
-| `OLLAMA_MODEL` | `glm-5.3-flash` | no |
-| `OLLAMA_MODEL_{RESEARCHER,SALES,BUILDER,REVIEWER}` | `OLLAMA_MODEL` | no |
-| `OLLAMA_MAX_REPAIR_RETRIES` | `2` | no |
-| `OLLAMA_TRANSPORT_RETRIES` | `2` | no |
-| `REVIEW_MAX_CYCLES` | `5` | no |
-| `REQUIRE_PAYMENT_FOR_PRODUCTION` | `true` (**fail-closed**; `false` = owner-authorized override that allows production deploy without confirmed payment) | no |
-| `EMAIL_PROVIDER` | `mock` | no |
-| `PAYMENT_PROVIDER` | `mock` | no |
-| `DEPLOYMENT_PROVIDER` | `local` | no |
-| `OUTREACH_ENABLED` | `false` | no |
-| `OUTREACH_REQUIRE_APPROVAL` | `true` | no |
-| `OUTREACH_COOLDOWN_HOURS` | `72` (per-contact) | no |
-| `OUTREACH_MIN_SCORE` | `60` (min researcher score for auto-qualification) | no |
-| `OUTREACH_KILL_SWITCH` | `false` | no |
-| `PAYMENT_WEBHOOK_SECRET` | — | **yes** |
-| `INBOUND_EMAIL_WEBHOOK_SECRET` | — | **yes** |
-| `PRICING_TIERS_JSON` | starter/business/premium (cents) | no |
-
 Configuration is fail-closed: missing required values, invalid enums, or
 malformed pricing JSON abort startup with a clear issue list. Secrets are
-redacted in logs (pino redact paths + deep-redaction of audit payloads).
+redacted in logs (pino redact paths + deep-redaction of audit payloads). The
+complete annotated variable table lives in the Configuration reference below
+and in `.env.example`.
 
 ## Running
 
