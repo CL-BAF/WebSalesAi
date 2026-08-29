@@ -301,17 +301,124 @@ Preview sites are served read-only at `/preview/<jobId>/…` and accepted
 production deployments at `/production/<jobId>/…`, both with strict path
 containment.
 
+## Configuration reference
+
+See `.env.example` for the full annotated list. Highlights:
+
+| Variable | Default | Secret |
+| --- | --- | --- |
+| `NODE_ENV` | `development` | no |
+| `PORT` | `3000` | no |
+| `DATABASE_PATH` | `./data/websalesai.sqlite` | no |
+| `LOG_LEVEL` | `info` | no |
+| `DASHBOARD_PASSWORD` | required (fail-closed) | **yes** |
+| `SESSION_SECRET` | required (fail-closed) | **yes** |
+| `OLLAMA_BASE_URL` | `https://ollama.com` | no |
+| `OLLAMA_API_KEY` | — | **yes** |
+| `OLLAMA_MODEL` | `glm-5.3-flash` | no |
+| `OLLAMA_MODEL_{RESEARCHER,SALES,BUILDER,REVIEWER}` | `OLLAMA_MODEL` | no |
+| `OLLAMA_MAX_REPAIR_RETRIES` | `2` | no |
+| `OLLAMA_TRANSPORT_RETRIES` | `2` | no |
+| `REVIEW_MAX_CYCLES` | `5` | no |
+| `REQUIRE_PAYMENT_FOR_PRODUCTION` | `true` (**fail-closed**; `false` = owner-authorized override that allows production deploy without confirmed payment) | no |
+| `EMAIL_PROVIDER` | `mock` (`resend` = production) | no |
+| `PAYMENT_PROVIDER` | `mock` (`stripe` = production) | no |
+| `DEPLOYMENT_PROVIDER` | `local` (`cloudflare` = hosted) | no |
+| `RESEND_API_KEY` | — (`re_…`) | **yes** |
+| `RESEND_FROM` | — (verified sender identity, e.g. `WebSalesAi <replies@yourdomain>`) | no |
+| `RESEND_SENDER_DOMAIN` | — (default: domain of `RESEND_FROM`) | no |
+| `RESEND_WEBHOOK_SECRET` | — (`whsec_…` svix signing secret) | **yes** |
+| `STRIPE_SECRET_KEY` | — (`sk_test_…`/`sk_live_…`, prefix-validated) | **yes** |
+| `STRIPE_WEBHOOK_SECRET` | — | **yes** |
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_PAGES_PROJECT` | — | **yes** (token) |
+| `PRODUCTION_EXTERNAL_ACTIONS_ENABLED` | `false` (**master gate**; real providers act only when true) | no |
+| `PUBLIC_BASE_URL` | `http://localhost:3000` | no |
+| `DATABASE_PATH` | `./data/websalesai.sqlite` | no |
+| `LOG_LEVEL` | `info` | no |
+| `NODE_ENV` | `development` | no |
+| `OLLAMA_TIMEOUT_MS` / `OLLAMA_MAX_REPAIR_RETRIES` / `OLLAMA_TRANSPORT_RETRIES` | `120000` / `2` / `2` | no |
+| `EMAIL_PROVIDER` | `mock` | no |
+| `PAYMENT_PROVIDER` | `mock` | no |
+| `DEPLOYMENT_PROVIDER` | `local` | no |
+| `OUTREACH_ENABLED` | `false` | no |
+| `OUTREACH_REQUIRE_APPROVAL` | `true` | no |
+| `OUTREACH_MAX_PER_DAY` | `20` | no |
+| `OUTREACH_MAX_PER_DOMAIN_PER_DAY` | `1` | no |
+| `OUTREACH_COOLDOWN_HOURS` | `72` (per-contact) | no |
+| `OUTREACH_MIN_SCORE` | `60` (min researcher score for auto-qualification) | no |
+| `OUTREACH_KILL_SWITCH` | `false` | no |
+| `AUTOMATION_PAUSED` | `false` | no |
+| `PAYMENT_WEBHOOK_SECRET` | — | **yes** |
+| `INBOUND_EMAIL_WEBHOOK_SECRET` | — | **yes** (legacy route removed; Resend uses `RESEND_WEBHOOK_SECRET`) |
+| `WORKSPACES_ROOT` / `PREVIEWS_ROOT` / `PRODUCTION_DEPLOYS_ROOT` | `./workspaces` / `./previews` / `./production-deploys` | no |
+| `PRICING_CURRENCY` | `USD` (Stripe supports AUD etc.) | no |
+| `PRICING_TIERS_JSON` | starter/business/premium (cents) | no |
+| `FETCH_TIMEOUT_MS` / `FETCH_MAX_BYTES` | `20000` / `2000000` | no |
+| `EXEC_TIMEOUT_MS` | `120000` | no |
+
+## Production integrations (Resend / Stripe / Cloudflare)
+
+Mock providers remain the default and everything works fully offline. Real
+providers activate when **both** their `*_PROVIDER` variable selects them
+**and** `PRODUCTION_EXTERNAL_ACTIONS_ENABLED=true`:
+
+- **Email (Resend)**: `EMAIL_PROVIDER=resend` + `RESEND_API_KEY`, `RESEND_FROM`
+  (a verified sending identity), `RESEND_WEBHOOK_SECRET` (svix signing secret).
+  Point your domain's inbound MX at Resend and register `POST
+  <PUBLIC_BASE_URL>/webhooks/resend` as the received-email webhook. Replies
+  are verified (svix), retrieved with bounded size, normalized to plain text,
+  threaded via References/In-Reply-To, and processed by the standard reply
+  pipeline (opt-out/suppression apply).
+- **Payments (Stripe)**: `PAYMENT_PROVIDER=stripe` + `STRIPE_SECRET_KEY`
+  (prefix-validated `sk_test_`/`sk_live_`) + `STRIPE_WEBHOOK_SECRET`. The app
+  creates hosted Checkout Sessions (card data never touches WebSalesAi) and
+  confirms payment ONLY from signature-verified `checkout.session.*` events,
+  cross-validated against the stored amount/currency/metadata. Subscribe only
+  to `checkout.session.completed`, `checkout.session.expired`,
+  `checkout.session.async_payment_failed`. Test mode = `sk_test_…` keys.
+- **Deployment (Cloudflare Pages)**: `DEPLOYMENT_PROVIDER=cloudflare` +
+  `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_PAGES_PROJECT`.
+  Deploys run the official wrangler CLI programmatically (no shell; child env
+  is allowlisted; token via env only). Preview URLs are **unlisted, not
+  access-controlled**; production = the project's production branch.
+- **Readiness gate**: `PRODUCTION_EXTERNAL_ACTIONS_ENABLED=false` (default)
+  forces mock providers even when real ones are configured (loud startup
+  warning + dashboard shows MOCK). Setting it `true` allows the configured
+  providers to act — approval gates, suppression, kill switch, payment checks
+  and deployment guards remain fully in force.
+
+### First sandbox test
+
+```bash
+cp .env.example .env          # mock defaults are safe
+npm install && npm test       # includes the S10 sandbox E2E (offline)
+npm run build && npm start    # dashboard on PORT (mock providers)
+```
+
+The sandbox end-to-end is automated in `tests/phase2E2E.test.ts`: it runs the
+documented flow with every external action clearly simulated. Live provider
+verification requires real credentials and is intentionally skipped:
+set the `RESEND_*` / `STRIPE_*` / `CLOUDFLARE_*` variables and run
+`npx tsx scripts/cloudflareSpike.ts` (exits with a loud SKIPPED without
+credentials — skipped is never reported as proof).
+
+### Disabling outreach immediately
+
+Set the kill switch in the dashboard (or `POST /api/settings {killSwitch:true}`),
+or set `OUTREACH_KILL_SWITCH=true` in `.env` and restart. `OUTREACH_ENABLED=false`
+alone already prevents all outbound email.
+
 ## Provider architecture
 
 All external providers sit behind interfaces so implementations can be
 swapped without touching business logic:
 
-| Interface | MVP implementation | Planned |
+| Interface | Default (mock) | Production implementation |
 | --- | --- | --- |
-| Email (`EmailProvider`) | in-memory/mock | SMTP / API providers |
-| Payment (`PaymentProvider`) | mock with HMAC-signed webhooks | Stripe-style |
-| Deployment (`DeploymentProvider`) | local filesystem | hosted targets |
-| Ollama transport | HTTP to Ollama Cloud/local | any OpenAI-compatible |
+| Email (`EmailProvider`) | in-memory/mock | **Resend** (`EMAIL_PROVIDER=resend`) — outbound API + svix-verified inbound webhooks |
+| Payment (`PaymentProvider`) | mock with HMAC-signed webhooks | **Stripe** hosted Checkout (`PAYMENT_PROVIDER=stripe`) |
+| Deployment (`DeploymentProvider`) | local filesystem | **Cloudflare Pages** (`DEPLOYMENT_PROVIDER=cloudflare`, via programmatic wrangler) |
+| Ollama transport | HTTP to Ollama Cloud/local | any OpenAI-compatible endpoint |
 
 The MVP ships only implementations that are actually exercised by tests;
 unimplemented providers fail fast with explicit errors instead of silently
