@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync, rmSync, readdirSync } from 'node:fs';
+﻿import { mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync, rmSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { ValidationError } from '../domain/errors.js';
 import { safeRelativePath } from '../agents/schemas.js';
@@ -133,6 +134,31 @@ export class Workspace {
     return match ? match[0] : null;
   }
 
+  /** Current git HEAD (artifact binding), null when no commits exist. */
+  async headCommit(): Promise<string | null> {
+    const res = await this.git(['rev-parse', 'HEAD'], true);
+    const match = res.stdout.trim().match(/^[0-9a-f]{7,40}/);
+    return match ? match[0] : null;
+  }
+
+  /**
+   * Deterministic content digest over every workspace file (sorted relative
+   * path + SHA-256 of content). Catches post-review mutations that git HEAD
+   * alone would miss (uncommitted file changes).
+   */
+  contentDigest(): string {
+        const hash = createHash('sha256');
+    for (const rel of this.listFiles()) {
+      const content = this.readFile(rel);
+      if (content === undefined) continue;
+      hash.update(rel);
+      hash.update('\u0000');
+      hash.update(content);
+      hash.update('\u0000');
+    }
+    return hash.digest('hex');
+  }
+
   /**
    * Runs git inside the workspace (allowlisted exec layer).
    * `allowFailure` marks commands that may legitimately no-op/fail
@@ -146,3 +172,4 @@ export class Workspace {
     return res;
   }
 }
+

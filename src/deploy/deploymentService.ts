@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { ValidationError } from '../domain/errors.js';
 import type { DeploymentProvider } from './deploymentProvider.js';
+import { Workspace } from '../website/workspace.js';
 import type { DeploymentRepository } from '../db/repositories/deployments.js';
 import type { LeadRepository } from '../db/repositories/leads.js';
 import type { WebsiteProjectRepository } from '../db/repositories/websiteProjects.js';
@@ -55,6 +56,10 @@ const SYSTEM = { actor: 'system', actorType: 'system' as const };
  */
 export class DeploymentService {
   constructor(private readonly deps: DeploymentServiceDeps) {}
+
+  private workspaceFor(jobId: string): Workspace {
+    return Workspace.open(path.resolve(this.deps.config.workspacesRoot), jobId, this.deps.config.execTimeoutMs);
+  }
 
   async deployAndSendPreview(jobId: string): Promise<PreviewResult> {
     const job = this.deps.jobs.requireById(jobId);
@@ -183,12 +188,41 @@ export class DeploymentService {
       throw new ValidationError(`production deployment requires READY_FOR_PRODUCTION state, job is ${job.state}`);
     }
 
-    // Defense-in-depth guard #1: an actual review PASS must exist.
+    // Defense-in-depth guard #1 (A3): the LATEST review row must be a PASS
+    // bound to the CURRENT artifact — git HEAD commit AND content digest.
+    // A stale PASS from an earlier cycle does not authorize production, and
+    // any post-PASS mutation (committed or not) voids the approval.
     const reviews = this.deps.reviews.listByJob(jobId);
-    if (!reviews.some((r) => r.verdict === 'PASS')) {
+    const latestReview = reviews[reviews.length - 1];
+    if (!latestReview || latestReview.verdict !== 'PASS') {
       this.deps.idempotency.release(idempotencyKey);
       this.deps.audit.append({ actor: 'system', actorType: 'system', action: 'production.deploy_requested', jobId, details: { refused: 'no review PASS on record' } });
       return { deployed: false, reason: 'no review PASS on record' };
+    }
+    const workspace = this.workspaceFor(jobId);
+    const currentHead = await workspace.headCommit();
+    const currentDigest = workspace.contentDigest();
+    if (latestReview.artifactCommit === null || latestReview.artifactCommit !== currentHead) {
+      this.deps.idempotency.release(idempotencyKey);
+      this.deps.audit.append({
+        actor: 'system',
+        actorType: 'system',
+        action: 'production.deploy_requested',
+        jobId,
+        details: { refused: 'artifact changed after review PASS (commit)', reviewedCommit: latestReview.artifactCommit, currentCommit: currentHead },
+      });
+      return { deployed: false, reason: `artifact changed after review PASS (reviewed commit ${latestReview.artifactCommit ?? 'none'}, current ${currentHead ?? 'none'})` };
+    }
+    if (latestReview.artifactHash === null || latestReview.artifactHash !== currentDigest) {
+      this.deps.idempotency.release(idempotencyKey);
+      this.deps.audit.append({
+        actor: 'system',
+        actorType: 'system',
+        action: 'production.deploy_requested',
+        jobId,
+        details: { refused: 'artifact content changed after review PASS' },
+      });
+      return { deployed: false, reason: 'artifact content changed after review PASS' };
     }
 
     // Defense-in-depth guard #2: payment confirmation (owner can disable via

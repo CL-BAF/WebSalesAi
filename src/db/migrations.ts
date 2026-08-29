@@ -276,6 +276,16 @@ ALTER TABLE leads ADD COLUMN contact_email_normalized TEXT;
 CREATE INDEX IF NOT EXISTS idx_leads_email_norm ON leads(contact_email_normalized) WHERE contact_email_normalized IS NOT NULL;
 `,
   },
+  {
+    // Artifact binding: a review PASS binds to the exact workspace state it
+    // approved — the git HEAD commit AND a content digest over all files.
+    // deployProduction re-verifies both; any post-PASS mutation voids the PASS.
+    name: '004_review_artifact_binding',
+    sql: `
+ALTER TABLE reviews ADD COLUMN artifact_commit TEXT;
+ALTER TABLE reviews ADD COLUMN artifact_hash TEXT;
+`,
+  },
 ];
 
 export class MigrationDriftError extends Error {

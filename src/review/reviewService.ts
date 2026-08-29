@@ -131,6 +131,10 @@ export class ReviewService {
     }
 
     const cycleNumber = this.deps.reviews.nextCycle(jobId);
+    // Artifact binding (entry criterion): a PASS binds to the exact workspace
+    // state approved — git HEAD commit + content digest over all files.
+    const artifactCommit = await workspace.headCommit();
+    const artifactHash = workspace.contentDigest();
     const review = this.deps.reviews.record({
       jobId,
       projectId: this.deps.projects.requireByJobId(jobId).id,
@@ -138,6 +142,8 @@ export class ReviewService {
       verdict: effectiveVerdict,
       findings: verdict,
       reviewerRunId,
+      artifactCommit,
+      artifactHash,
     });
     this.deps.audit.append({
       actor: 'agent:reviewer',

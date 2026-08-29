@@ -1,4 +1,4 @@
-import { Database } from '../../src/db/database.js';
+﻿import { Database } from '../../src/db/database.js';
 import { runMigrations } from '../../src/db/migrations.js';
 import { LeadRepository } from '../../src/db/repositories/leads.js';
 import { WorkflowJobRepository } from '../../src/db/repositories/workflowJobs.js';
@@ -11,6 +11,7 @@ import { IdempotencyRepository } from '../../src/db/repositories/idempotency.js'
 import { AgentRunRepository } from '../../src/db/repositories/agentRuns.js';
 import { AuditEventRepository } from '../../src/db/repositories/auditEvents.js';
 import { WebsiteProjectRepository } from '../../src/db/repositories/websiteProjects.js';
+import { ReviewRepository } from '../../src/db/repositories/reviews.js';
 import { WorkflowEngine } from '../../src/engine/workflowEngine.js';
 import { AgentFramework } from '../../src/agents/framework.js';
 import { SalesAgent } from '../../src/crm/salesAgent.js';
@@ -32,6 +33,7 @@ export interface World {
   outreachRepo: OutreachRepository;
   requirements: RequirementRepository;
   projects: WebsiteProjectRepository;
+  reviews: ReviewRepository;
   settings: SettingsRepository;
   idempotency: IdempotencyRepository;
   runs: AgentRunRepository;
@@ -61,6 +63,7 @@ export function makeWorld(opts: {
   const outreachRepo = new OutreachRepository(db);
   const requirements = new RequirementRepository(db);
   const projects = new WebsiteProjectRepository(db);
+  const reviews = new ReviewRepository(db);
   const settings = new SettingsRepository(db);
   const idempotency = new IdempotencyRepository(db);
   const runs = new AgentRunRepository(db);
@@ -71,7 +74,7 @@ export function makeWorld(opts: {
       opts.transport ??
       (async (req) => ({
         model: req.model,
-        content: JSON.stringify({ subject: 'Quick question about the Acme site', body: 'Hi, would a modern redesign help your bakery? — WebSalesAi' }),
+        content: JSON.stringify({ subject: 'Quick question about the Acme site', body: 'Hi, would a modern redesign help your bakery? â€” WebSalesAi' }),
         usage: {},
       })),
     models: config.ollama.models,
@@ -111,7 +114,7 @@ export function makeWorld(opts: {
     log,
   });
   return {
-    db, leads, jobs, suppressions, conversations, outreachRepo, requirements, projects, settings,
+    db, leads, jobs, suppressions, conversations, outreachRepo, requirements, projects, reviews, settings,
     idempotency, runs, audit, engine, salesAgent, framework, email, outreach,
     conversationsService, config, now: opts.now ?? (() => new Date()),
   };
@@ -162,7 +165,7 @@ export function classificationPayload(overrides: Record<string, unknown> = {}): 
     confidence: 0.9,
     summary: 'Customer asked about timeline.',
     extractedRequirements: [],
-    suggestedReply: 'Thanks for your question — typical timelines are 2-4 weeks once requirements are clear.',
+    suggestedReply: 'Thanks for your question â€” typical timelines are 2-4 weeks once requirements are clear.',
     needsHumanReview: false,
     ...overrides,
   };
@@ -181,3 +184,4 @@ export function transportFor(payload: Record<string, unknown>): OllamaTransport 
 export function makeWorldWithClassification(payload: Record<string, unknown>, configOverrides: Record<string, string> = { OUTREACH_ENABLED: 'true' }): World {
   return makeWorld({ configOverrides, transport: transportFor(payload) });
 }
+

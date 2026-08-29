@@ -9,6 +9,8 @@ export interface ReviewRecord {
   verdict: 'PASS' | 'CHANGES_REQUIRED';
   findingsJson: string | null;
   reviewerRunId: string | null;
+  artifactCommit: string | null;
+  artifactHash: string | null;
   createdAt: string;
 }
 
@@ -21,6 +23,8 @@ function rowToReview(row: Record<string, unknown>): ReviewRecord {
     verdict: row['verdict'] as ReviewRecord['verdict'],
     findingsJson: (row['findings_json'] as string | null) ?? null,
     reviewerRunId: (row['reviewer_run_id'] as string | null) ?? null,
+    artifactCommit: (row['artifact_commit'] as string | null) ?? null,
+    artifactHash: (row['artifact_hash'] as string | null) ?? null,
     createdAt: String(row['created_at']),
   };
 }
@@ -40,12 +44,14 @@ export class ReviewRepository {
     verdict: 'PASS' | 'CHANGES_REQUIRED';
     findings: unknown;
     reviewerRunId?: string | null;
+    artifactCommit?: string | null;
+    artifactHash?: string | null;
   }): ReviewRecord {
     const id = newId('rev');
     const at = nowIso();
     this.db.run(
-      `INSERT INTO reviews (id, job_id, project_id, cycle, verdict, findings_json, reviewer_run_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO reviews (id, job_id, project_id, cycle, verdict, findings_json, reviewer_run_id, artifact_commit, artifact_hash, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       input.jobId,
       input.projectId,
@@ -53,6 +59,8 @@ export class ReviewRepository {
       input.verdict,
       JSON.stringify(input.findings ?? null),
       input.reviewerRunId ?? null,
+      input.artifactCommit ?? null,
+      input.artifactHash ?? null,
       at,
     );
     const row = this.db.get<Record<string, unknown>>('SELECT * FROM reviews WHERE id = ?', id);
