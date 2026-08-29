@@ -102,8 +102,8 @@ export class CloudflarePagesProvider implements DeploymentProvider {
   }
 
   /** Extracts the per-deployment pages.dev URL from wrangler output. */
-  private extractDeploymentUrl(stdout: string): string | null {
-    // wrangler prints: "âœ¨ Deployment complete! Take a peek over at <url>"
+  extractDeploymentUrl(stdout: string): string | null {
+    // wrangler prints: "✨ Deployment complete! Take a peek over at <url>"
     const peek = stdout.match(/Take a peek over at (https:\/\/[a-zA-Z0-9.-]+\.pages\.dev)/i);
     if (peek) return peek[1]!;
     const anyUrl = stdout.match(/https:\/\/[a-zA-Z0-9-]+\.[a-zA-Z0-9.-]*pages\.dev/i);
